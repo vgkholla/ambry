@@ -686,7 +686,7 @@ public class AmbryBlobStorageServiceTest {
    *                  expiry.
    * @param isPrivate sets the {@link RestUtils.Headers#PRIVATE} header. Allowed values: true, false.
    * @param serviceId sets the {@link RestUtils.Headers#SERVICE_ID} header. Required.
-   * @param contentType sets the {@link RestUtils.Headers#CONTENT_TYPE} header. Required and has to be a valid MIME
+   * @param contentType sets the {@link RestUtils.Headers#AMBRY_CONTENT_TYPE} header. Required and has to be a valid MIME
    *                    type.
    * @param ownerId sets the {@link RestUtils.Headers#OWNER_ID} header. Optional - if not required, send null.
    * @throws IllegalArgumentException if any of {@code headers}, {@code serviceId}, {@code contentType} is null or if
@@ -900,8 +900,7 @@ public class AmbryBlobStorageServiceTest {
     assertTrue("No Date header", restResponseChannel.getHeader(RestUtils.Headers.DATE) != null);
     assertTrue("No " + RestUtils.Headers.CREATION_TIME,
         restResponseChannel.getHeader(RestUtils.Headers.CREATION_TIME) != null);
-    assertEquals("Content-Length is not 0", "0",
-        restResponseChannel.getHeader(RestUtils.Headers.CONTENT_LENGTH));
+    assertEquals("Content-Length is not 0", "0", restResponseChannel.getHeader(RestUtils.Headers.CONTENT_LENGTH));
     String blobId = restResponseChannel.getHeader(RestUtils.Headers.LOCATION);
     if (blobId == null) {
       fail("postBlobAndVerify did not return a blob ID");
@@ -996,8 +995,7 @@ public class AmbryBlobStorageServiceTest {
     doDelete(restRequest, restResponseChannel);
     assertEquals("Unexpected response status", ResponseStatus.Accepted, restResponseChannel.getResponseStatus());
     assertTrue("No Date header", restResponseChannel.getHeader(RestUtils.Headers.DATE) != null);
-    assertEquals("Content-Length is not 0", "0",
-        restResponseChannel.getHeader(RestUtils.Headers.CONTENT_LENGTH));
+    assertEquals("Content-Length is not 0", "0", restResponseChannel.getHeader(RestUtils.Headers.CONTENT_LENGTH));
   }
 
   /**

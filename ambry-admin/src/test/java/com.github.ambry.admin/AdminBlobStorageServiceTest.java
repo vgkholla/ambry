@@ -349,8 +349,7 @@ public class AdminBlobStorageServiceTest {
     MockRestResponseChannel restResponseChannel = new MockRestResponseChannel();
     ReadableStreamChannel channel = doGet(restRequest, restResponseChannel);
     String echoedText = getJsonizedResponseBody(channel).getString(EchoHandler.TEXT_KEY);
-    assertEquals("Unexpected response status", ResponseStatus.Ok,
-        restResponseChannel.getResponseStatus(MockRestResponseChannel.DataStatus.Flushed));
+    assertEquals("Unexpected response status", ResponseStatus.Ok, restResponseChannel.getResponseStatus());
     assertEquals("Unexpected Content-Type", "application/json",
         restResponseChannel.getHeader(RestUtils.Headers.CONTENT_TYPE));
     assertEquals("Did not get expected response", inputText, echoedText);
@@ -393,8 +392,7 @@ public class AdminBlobStorageServiceTest {
       RestRequest restRequest = createGetReplicasForBlobIdRestRequest(blobId.getID());
       MockRestResponseChannel restResponseChannel = new MockRestResponseChannel();
       ReadableStreamChannel channel = doGet(restRequest, restResponseChannel);
-      assertEquals("Unexpected response status", ResponseStatus.Ok,
-          restResponseChannel.getResponseStatus(MockRestResponseChannel.DataStatus.Flushed));
+      assertEquals("Unexpected response status", ResponseStatus.Ok, restResponseChannel.getResponseStatus());
       assertEquals("Unexpected Content-Type", "application/json",
           restResponseChannel.getHeader(RestUtils.Headers.CONTENT_TYPE));
       String returnedReplicasStr =

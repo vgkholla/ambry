@@ -195,7 +195,7 @@ public class AdminIntegrationTest {
   private ByteBuffer getContent(HttpResponse response, LinkedBlockingQueue<HttpObject> contents) {
     long contentLength = HttpHeaders.getContentLength(response, -1);
     if (contentLength == -1) {
-      contentLength = HttpHeaders.getIntHeader(response, RestUtils.Headers.Blob_Size, 0);
+      contentLength = HttpHeaders.getIntHeader(response, RestUtils.Headers.BLOB_SIZE, 0);
     }
     ByteBuffer buffer = ByteBuffer.allocate((int) contentLength);
     HttpContent content = (HttpContent) contents.poll();
@@ -250,6 +250,7 @@ public class AdminIntegrationTest {
     Properties properties = new Properties();
     properties.put("rest.server.blob.storage.service.factory", "com.github.ambry.admin.AdminBlobStorageServiceFactory");
     properties.put("rest.server.router.factory", "com.github.ambry.router.InMemoryRouterFactory");
+    properties.put("netty.server.port", Integer.toString(SERVER_PORT));
     return new VerifiableProperties(properties);
   }
 
@@ -270,27 +271,27 @@ public class AdminIntegrationTest {
    * Sets headers that helps build {@link BlobProperties} on the server. See argument list for the headers that are set.
    * Any other headers have to be set explicitly.
    * @param httpHeaders the {@link HttpHeaders} where the headers should be set.
-   * @param contentLength sets the {@link RestUtils.Headers#Blob_Size} header. Required.
+   * @param contentLength sets the {@link RestUtils.Headers#BLOB_SIZE} header. Required.
    * @param ttlInSecs sets the {@link RestUtils.Headers#TTL} header. Set to {@link Utils#Infinite_Time} if no
    *                  expiry.
-   * @param isPrivate sets the {@link RestUtils.Headers#Private} header. Allowed values: true, false.
-   * @param serviceId sets the {@link RestUtils.Headers#Service_Id} header. Required.
-   * @param contentType sets the {@link RestUtils.Headers#Content_Type} header. Required and has to be a valid MIME
+   * @param isPrivate sets the {@link RestUtils.Headers#PRIVATE} header. Allowed values: true, false.
+   * @param serviceId sets the {@link RestUtils.Headers#SERVICE_ID} header. Required.
+   * @param contentType sets the {@link RestUtils.Headers#AMBRY_CONTENT_TYPE} header. Required and has to be a valid MIME
    *                    type.
-   * @param ownerId sets the {@link RestUtils.Headers#Owner_Id} header. Optional - if not required, send null.
+   * @param ownerId sets the {@link RestUtils.Headers#OWNER_ID} header. Optional - if not required, send null.
    * @throws IllegalArgumentException if any of {@code headers}, {@code serviceId}, {@code contentType} is null or if
    *                                  {@code contentLength} < 0 or if {@code ttlInSecs} < -1.
    */
   private void setAmbryHeaders(HttpHeaders httpHeaders, long contentLength, long ttlInSecs, boolean isPrivate,
       String serviceId, String contentType, String ownerId) {
     if (httpHeaders != null && contentLength >= 0 && ttlInSecs >= -1 && serviceId != null && contentType != null) {
-      httpHeaders.add(RestUtils.Headers.Blob_Size, contentLength);
+      httpHeaders.add(RestUtils.Headers.BLOB_SIZE, contentLength);
       httpHeaders.add(RestUtils.Headers.TTL, ttlInSecs);
-      httpHeaders.add(RestUtils.Headers.Private, isPrivate);
-      httpHeaders.add(RestUtils.Headers.Service_Id, serviceId);
-      httpHeaders.add(RestUtils.Headers.Content_Type, contentType);
+      httpHeaders.add(RestUtils.Headers.PRIVATE, isPrivate);
+      httpHeaders.add(RestUtils.Headers.SERVICE_ID, serviceId);
+      httpHeaders.add(RestUtils.Headers.AMBRY_CONTENT_TYPE, contentType);
       if (ownerId != null) {
-        httpHeaders.add(RestUtils.Headers.Owner_Id, ownerId);
+        httpHeaders.add(RestUtils.Headers.OWNER_ID, ownerId);
       }
     } else {
       throw new IllegalArgumentException("Some required arguments are null. Cannot set ambry headers");
@@ -312,8 +313,8 @@ public class AdminIntegrationTest {
     discardContent(responseParts);
     assertEquals("Unexpected response status", HttpResponseStatus.CREATED, response.getStatus());
     assertTrue("No Date header", HttpHeaders.getDateHeader(response, HttpHeaders.Names.DATE, null) != null);
-    assertTrue("No " + RestUtils.Headers.Creation_Time,
-        HttpHeaders.getHeader(response, RestUtils.Headers.Creation_Time, null) != null);
+    assertTrue("No " + RestUtils.Headers.CREATION_TIME,
+        HttpHeaders.getHeader(response, RestUtils.Headers.CREATION_TIME, null) != null);
     assertEquals("Content-Length is not 0", 0, HttpHeaders.getContentLength(response));
     String blobId = HttpHeaders.getHeader(response, HttpHeaders.Names.LOCATION, null);
 
@@ -356,23 +357,23 @@ public class AdminIntegrationTest {
     assertEquals("Unexpected response status", HttpResponseStatus.OK, response.getStatus());
     checkCommonGetHeadHeaders(response.headers(), expectedHeaders);
     assertEquals("Content-Length does not match blob size",
-        Long.parseLong(expectedHeaders.get(RestUtils.Headers.Blob_Size)), HttpHeaders.getContentLength(response));
-    assertEquals(RestUtils.Headers.Service_Id + " does not match", expectedHeaders.get(RestUtils.Headers.Service_Id),
-        HttpHeaders.getHeader(response, RestUtils.Headers.Service_Id));
-    assertEquals(RestUtils.Headers.Private + " does not match", expectedHeaders.get(RestUtils.Headers.Private),
-        HttpHeaders.getHeader(response, RestUtils.Headers.Private));
-    assertEquals(RestUtils.Headers.Content_Type + " does not match",
-        expectedHeaders.get(RestUtils.Headers.Content_Type),
-        HttpHeaders.getHeader(response, RestUtils.Headers.Content_Type));
-    assertTrue("No " + RestUtils.Headers.Creation_Time,
-        HttpHeaders.getHeader(response, RestUtils.Headers.Creation_Time, null) != null);
+        Long.parseLong(expectedHeaders.get(RestUtils.Headers.BLOB_SIZE)), HttpHeaders.getContentLength(response));
+    assertEquals(RestUtils.Headers.SERVICE_ID + " does not match", expectedHeaders.get(RestUtils.Headers.SERVICE_ID),
+        HttpHeaders.getHeader(response, RestUtils.Headers.SERVICE_ID));
+    assertEquals(RestUtils.Headers.PRIVATE + " does not match", expectedHeaders.get(RestUtils.Headers.PRIVATE),
+        HttpHeaders.getHeader(response, RestUtils.Headers.PRIVATE));
+    assertEquals(RestUtils.Headers.AMBRY_CONTENT_TYPE + " does not match",
+        expectedHeaders.get(RestUtils.Headers.AMBRY_CONTENT_TYPE),
+        HttpHeaders.getHeader(response, RestUtils.Headers.AMBRY_CONTENT_TYPE));
+    assertTrue("No " + RestUtils.Headers.CREATION_TIME,
+        HttpHeaders.getHeader(response, RestUtils.Headers.CREATION_TIME, null) != null);
     if (Long.parseLong(expectedHeaders.get(RestUtils.Headers.TTL)) != Utils.Infinite_Time) {
       assertEquals(RestUtils.Headers.TTL + " does not match", expectedHeaders.get(RestUtils.Headers.TTL),
           HttpHeaders.getHeader(response, RestUtils.Headers.TTL));
     }
-    if (expectedHeaders.contains(RestUtils.Headers.Owner_Id)) {
-      assertEquals(RestUtils.Headers.Owner_Id + " does not match", expectedHeaders.get(RestUtils.Headers.Owner_Id),
-          HttpHeaders.getHeader(response, RestUtils.Headers.Owner_Id));
+    if (expectedHeaders.contains(RestUtils.Headers.OWNER_ID)) {
+      assertEquals(RestUtils.Headers.OWNER_ID + " does not match", expectedHeaders.get(RestUtils.Headers.OWNER_ID),
+          HttpHeaders.getHeader(response, RestUtils.Headers.OWNER_ID));
     }
   }
 
@@ -427,11 +428,11 @@ public class AdminIntegrationTest {
    * @param expectedHeaders the expected headers.
    */
   private void checkCommonGetHeadHeaders(HttpHeaders receivedHeaders, HttpHeaders expectedHeaders) {
-    assertEquals("Content-Type does not match", expectedHeaders.get(RestUtils.Headers.Content_Type),
+    assertEquals("Content-Type does not match", expectedHeaders.get(RestUtils.Headers.AMBRY_CONTENT_TYPE),
         receivedHeaders.get(HttpHeaders.Names.CONTENT_TYPE));
     assertTrue("No Date header", receivedHeaders.get(HttpHeaders.Names.DATE) != null);
     assertTrue("No Last-Modified header", receivedHeaders.get(HttpHeaders.Names.LAST_MODIFIED) != null);
-    assertEquals(RestUtils.Headers.Blob_Size + " does not match", expectedHeaders.get(RestUtils.Headers.Blob_Size),
-        receivedHeaders.get(RestUtils.Headers.Blob_Size));
+    assertEquals(RestUtils.Headers.BLOB_SIZE + " does not match", expectedHeaders.get(RestUtils.Headers.BLOB_SIZE),
+        receivedHeaders.get(RestUtils.Headers.BLOB_SIZE));
   }
 }
