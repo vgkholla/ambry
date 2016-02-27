@@ -339,7 +339,7 @@ public class RestUtils {
       Object valueObj = args.get(header);
       value = valueObj != null ? valueObj.toString() : null;
       if (value == null && required) {
-        throw new RestServiceException("Request has unacceptable value for header: " + header,
+        throw new RestServiceException("Request has null value for header: " + header,
             RestServiceErrorCode.InvalidArgs);
       }
     } else if (required) {

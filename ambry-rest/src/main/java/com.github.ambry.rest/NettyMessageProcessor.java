@@ -195,7 +195,7 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
       logger.warn("Received null/unrecognized HttpObject {} on channel {}", obj, ctx.channel());
       nettyMetrics.unknownHttpObjectError.inc();
       if (responseChannel == null || responseChannel.isResponseComplete()) {
-        refreshState();
+        resetState();
       }
       throw new RestServiceException("HttpObject received is null or not of a known type",
           RestServiceErrorCode.UnknownHttpObject);
@@ -223,7 +223,7 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
     if (responseChannel == null || responseChannel.isResponseComplete()) {
       long processingStartTime = System.currentTimeMillis();
       try {
-        refreshState();
+        resetState();
         nettyMetrics.requestArrivalRate.mark();
         if (!httpRequest.getDecoderResult().isSuccess()) {
           logger.warn("Decoder failed because of malformed request on channel {}", ctx.channel());
@@ -234,7 +234,7 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
         // We need to maintain state about the request itself for the subsequent parts (if any) that come in. We will
         // attach content to the request as the content arrives.
         request = new NettyRequest(httpRequest, nettyMetrics);
-        responseChannel.setRequest(request, HttpHeaders.isKeepAlive(httpRequest));
+        responseChannel.setRequest(request);
         logger.trace("Channel {} now handling request {}", ctx.channel(), request.getUri());
         // We send POST for handling immediately since we expect valid content with it.
         // With any other method that we support, we do not expect any valid content. LastHttpContent is a Netty thing.
@@ -249,7 +249,7 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
       }
     } else {
       // We have received a request when we were not expecting one. This shouldn't happen and there is no good way to
-      // deal with it. So just update a metric and log an error and abort the ongoing request.
+      // deal with it. So just update a metric and log an error.
       logger.warn("Discarding unexpected request on channel {}. Request under processing: {}. Unexpected request: {}",
           ctx.channel(), request.getUri(), httpRequest.getUri());
       nettyMetrics.duplicateRequestError.inc();
@@ -289,8 +289,8 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
         requestHandler.handleRequest(request, responseChannel);
       }
     } else {
-      refreshState();
-      logger.warn("Received content without a request on channel {}", ctx.channel());
+      resetState();
+      logger.warn("Received content when it was not expected on channel {}", ctx.channel());
       nettyMetrics.noRequestError.inc();
       throw new RestServiceException("Received content without a request", RestServiceErrorCode.InvalidRequestState);
     }
@@ -321,9 +321,9 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
   }
 
   /**
-   * Refreshes the state of the processor in preparation for the next request.
+   * Resets the state of the processor in preparation for the next request.
    */
-  private void refreshState() {
+  private void resetState() {
     request = null;
     lastChannelReadTime = null;
     requestContentFullyReceived = false;

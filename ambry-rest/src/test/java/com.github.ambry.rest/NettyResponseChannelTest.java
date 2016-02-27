@@ -67,7 +67,7 @@ public class NettyResponseChannelTest {
     final int ITERATIONS = 5;
     for (int i = 0; i < 5; i++) {
       boolean isKeepAlive = i != (ITERATIONS - 1);
-      String contentToSend = content + requestIdGenerator;
+      String contentToSend = content + requestIdGenerator.getAndIncrement();
       HttpRequest httpRequest = createRequest(HttpMethod.POST, "/");
       HttpHeaders.setKeepAlive(httpRequest, isKeepAlive);
       channel.writeInbound(httpRequest);
@@ -251,7 +251,7 @@ public class NettyResponseChannelTest {
   }
 
   /**
-   * Tries different exception scenarios for {@link NettyResponseChannel#setRequest(NettyRequest, boolean)}.
+   * Tries different exception scenarios for {@link NettyResponseChannel#setRequest(NettyRequest)}.
    */
   @Test
   public void setRequestTest() {
@@ -593,7 +593,7 @@ class MockNettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> 
       throws Exception {
     request = new NettyRequest(httpRequest, nettyMetrics);
     restResponseChannel = new NettyResponseChannel(ctx, nettyMetrics);
-    restResponseChannel.setRequest(request, HttpHeaders.isKeepAlive(httpRequest));
+    restResponseChannel.setRequest(request);
     restResponseChannel.setHeader(RestUtils.Headers.CONTENT_TYPE, "text/plain; charset=UTF-8");
     TestingUri uri = TestingUri.getTestingURI(request.getUri());
     switch (uri) {
@@ -774,7 +774,7 @@ class MockNettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> 
   }
 
   /**
-   * Tries different exception scenarios for {@link NettyResponseChannel#setRequest(NettyRequest, boolean)}.
+   * Tries different exception scenarios for {@link NettyResponseChannel#setRequest(NettyRequest)}.
    * @throws RestServiceException
    */
   private void setRequestTest()
@@ -783,16 +783,16 @@ class MockNettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> 
     restResponseChannel = new NettyResponseChannel(ctx, new NettyMetrics(new MetricRegistry()));
     try {
       try {
-        restResponseChannel.setRequest(null, false);
+        restResponseChannel.setRequest(null);
         status = ResponseStatus.InternalServerError;
         fail("Tried to set null request yet no exception was thrown");
       } catch (IllegalArgumentException e) {
         // expected. Nothing to do.
       }
 
-      restResponseChannel.setRequest(request, false);
+      restResponseChannel.setRequest(request);
       try {
-        restResponseChannel.setRequest(request, false);
+        restResponseChannel.setRequest(request);
         status = ResponseStatus.InternalServerError;
         fail("Tried to reset request and no exception was thrown");
       } catch (IllegalStateException e) {

@@ -434,6 +434,24 @@ public class NettyRequestTest {
     }
   }
 
+  @Test
+  public void keepAliveTest()
+      throws RestServiceException {
+    NettyRequest request = createNettyRequest(HttpMethod.GET, "/", null);
+    // by default, keep-alive is true for HTTP 1.1
+    assertTrue("Keep-alive not as expected", request.isKeepAlive());
+
+    HttpHeaders headers = new DefaultHttpHeaders();
+    headers.set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.KEEP_ALIVE);
+    request = createNettyRequest(HttpMethod.GET, "/", headers);
+    assertTrue("Keep-alive not as expected", request.isKeepAlive());
+
+    headers = new DefaultHttpHeaders();
+    headers.set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
+    request = createNettyRequest(HttpMethod.GET, "/", headers);
+    assertFalse("Keep-alive not as expected", request.isKeepAlive());
+  }
+
   /**
    * Tests the {@link NettyRequest#getSize()} function to see that it respects priorities.
    * @throws RestServiceException
@@ -597,7 +615,7 @@ public class NettyRequestTest {
 
     assertEquals("Number of args does not match", keyValueCount.size(), receivedArgs.size());
     for (Map.Entry<String, Integer> e : keyValueCount.entrySet()) {
-      assertEquals("Values for key " + e.getKey() + " does not match", e.getValue().intValue(),
+      assertEquals("Value count for key " + e.getKey() + " does not match", e.getValue().intValue(),
           receivedArgs.get(e.getKey()).size());
     }
   }

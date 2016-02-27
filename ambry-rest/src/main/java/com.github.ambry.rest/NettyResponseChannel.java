@@ -69,7 +69,6 @@ class NettyResponseChannel implements RestResponseChannel {
   private NettyRequest request = null;
   // marked as true once response sending is *completely* finished. Signifies that this instance is no longer useful.
   private volatile boolean responseComplete = false;
-  private boolean isKeepAlive = false;
 
   /**
    * Create an instance of NettyResponseChannel that will use {@code ctx} to return responses.
@@ -189,14 +188,12 @@ class NettyResponseChannel implements RestResponseChannel {
    * Sets the request whose response is being served through this instance of NettyResponseChannel.
    * @param request the {@link NettyRequest} whose response is being served through this instance of
    *                NettyResponseChannel.
-   * @param isKeepAlive if {@code true}, the connection is to be kept alive if there aren't any errors.
    */
-  protected void setRequest(NettyRequest request, boolean isKeepAlive) {
+  protected void setRequest(NettyRequest request) {
     if (request != null) {
       if (this.request == null) {
         this.request = request;
-        this.isKeepAlive = isKeepAlive;
-        HttpHeaders.setKeepAlive(responseMetadata, isKeepAlive);
+        HttpHeaders.setKeepAlive(responseMetadata, request.isKeepAlive());
       } else {
         throw new IllegalStateException(
             "Request has already been set inside NettyResponseChannel for channel {} " + ctx.channel());
@@ -382,9 +379,7 @@ class NettyResponseChannel implements RestResponseChannel {
       writeFuture.addListener(ChannelFutureListener.CLOSE);
       logger.trace("Requested closing of channel {}", ctx.channel());
     }
-    if (request != null && request.isOpen()) {
-      closeRequest();
-    }
+    closeRequest();
     responseComplete = true;
   }
 
@@ -587,7 +582,7 @@ class NettyResponseChannel implements RestResponseChannel {
     public void operationComplete(ChannelProgressiveFuture future) {
       if (future.isSuccess()) {
         logger.trace("Response sending complete on channel {}", ctx.channel());
-        completeRequest(!isKeepAlive);
+        completeRequest(request == null || !request.isKeepAlive());
       } else {
         handleChannelWriteFailure(future.cause(), true);
       }
