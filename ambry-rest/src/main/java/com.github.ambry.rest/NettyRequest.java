@@ -116,11 +116,6 @@ class NettyRequest implements RestRequest {
       }
     }
     allArgsReadOnly = Collections.unmodifiableMap(allArgs);
-
-    // add content immediately if request is also an instance of HttpContent
-    if (request instanceof HttpContent) {
-      addContent((HttpContent) request);
-    }
   }
 
   private StringBuilder combineVals(StringBuilder currValue, List<String> values) {
@@ -303,7 +298,7 @@ class NettyRequest implements RestRequest {
       // a copy (or we can introduce a read(GatheringByteChannel) method in ReadableStreamChannel if required).
       nettyMetrics.contentCopyCount.inc();
       logger.warn("HttpContent had to be copied because ByteBuf did not have a backing ByteBuffer");
-      ByteBuffer contentBuffer = ByteBuffer.allocate(httpContent.content().capacity());
+      ByteBuffer contentBuffer = ByteBuffer.allocate(httpContent.content().readableBytes());
       httpContent.content().readBytes(contentBuffer);
       // no need to retain httpContent since we have a copy.
       ContentWriteCallback writeCallback = new ContentWriteCallback(null, isLast, callbackWrapper);

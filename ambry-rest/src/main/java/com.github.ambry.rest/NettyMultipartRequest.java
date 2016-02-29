@@ -56,10 +56,6 @@ public class NettyMultipartRequest extends NettyRequest {
     if (!getRestMethod().equals(RestMethod.POST)) {
       throw new IllegalArgumentException("NettyMultipartRequest cannot be created for " + getRestMethod());
     }
-    // just in case request was an instance of HttpContent
-    if (requestContents.peek() != null) {
-      rawRequestContents.add(requestContents.poll());
-    }
   }
 
   @Override

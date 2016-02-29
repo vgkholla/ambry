@@ -3,7 +3,6 @@ package com.github.ambry.rest;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.LastHttpContent;
@@ -242,6 +241,10 @@ class NettyMessageProcessor extends SimpleChannelInboundHandler<HttpObject> {
         // schedule the other methods for handling in handleContent().
         if (request.getRestMethod().equals(RestMethod.POST)) {
           requestHandler.handleRequest(request, responseChannel);
+        }
+        // handle content if request is also an instance of HttpContent
+        if (httpRequest instanceof HttpContent) {
+          handleContent((HttpContent) httpRequest);
         }
       } finally {
         request.getMetricsTracker().nioMetricsTracker
