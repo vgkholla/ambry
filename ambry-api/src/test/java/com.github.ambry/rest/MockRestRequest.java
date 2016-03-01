@@ -10,7 +10,6 @@ import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
-import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -42,7 +41,7 @@ public class MockRestRequest implements RestRequest {
   /**
    * List of "events" (function calls) that can occur inside MockRestRequest.
    */
-  public static enum Event {
+  public enum Event {
     GetRestMethod,
     GetPath,
     GetUri,
@@ -81,7 +80,7 @@ public class MockRestRequest implements RestRequest {
 
   private final RestMethod restMethod;
   private final URI uri;
-  private final Map<String, List<String>> args = new HashMap<String, List<String>>();
+  private final Map<String, Object> args = new HashMap<String, Object>();
   private final ReentrantLock contentLock = new ReentrantLock();
   private final List<ByteBuffer> requestContents;
   private final AtomicBoolean channelOpen = new AtomicBoolean(true);
@@ -90,6 +89,8 @@ public class MockRestRequest implements RestRequest {
 
   private volatile AsyncWritableChannel writeChannel = null;
   private volatile ReadIntoCallbackWrapper callbackWrapper = null;
+
+  private static String MULTIPLE_HEADER_VALUE_DELIMITER = ", ";
 
   /**
    * Create a MockRestRequest.
@@ -135,7 +136,7 @@ public class MockRestRequest implements RestRequest {
   }
 
   @Override
-  public Map<String, List<String>> getArgs() {
+  public Map<String, Object> getArgs() {
     onEventComplete(Event.GetArgs);
     return args;
   }
@@ -152,20 +153,14 @@ public class MockRestRequest implements RestRequest {
   public long getSize() {
     long contentLength;
     if (args.get(RestUtils.Headers.BLOB_SIZE) != null) {
-      contentLength = Long.parseLong(args.get(RestUtils.Headers.BLOB_SIZE).get(0));
+      contentLength = Long.parseLong(args.get(RestUtils.Headers.BLOB_SIZE).toString());
     } else {
       contentLength =
-          args.get(CONTENT_LENGTH_HEADER_KEY) != null ? Long.parseLong(args.get(CONTENT_LENGTH_HEADER_KEY).get(0)) : 0;
+          args.get(CONTENT_LENGTH_HEADER_KEY) != null ? Long.parseLong(args.get(CONTENT_LENGTH_HEADER_KEY).toString())
+              : 0;
     }
     onEventComplete(Event.GetSize);
     return contentLength;
-  }
-
-  @Override
-  @Deprecated
-  public int read(WritableByteChannel channel)
-      throws IOException {
-    throw new IllegalStateException("Not implemented");
   }
 
   @Override
@@ -296,6 +291,13 @@ public class MockRestRequest implements RestRequest {
         addOrUpdateArg(key, value);
       }
     }
+
+    // convert all StringBuilders to String
+    for (Map.Entry<String, Object> e : args.entrySet()) {
+      if (e.getValue() != null) {
+        args.put(e.getKey(), (e.getValue()).toString());
+      }
+    }
   }
 
   /**
@@ -311,10 +313,16 @@ public class MockRestRequest implements RestRequest {
     if (value != null) {
       value = URLDecoder.decode(value, "UTF-8");
     }
-    if (!args.containsKey(key)) {
-      args.put(key, new LinkedList<String>());
+    StringBuilder sb;
+    if (value != null && args.get(key) == null) {
+      sb = new StringBuilder(value);
+      args.put(key, sb);
+    } else if (value != null) {
+      sb = (StringBuilder) args.get(key);
+      sb.append(MULTIPLE_HEADER_VALUE_DELIMITER).append(value);
+    } else if (!args.containsKey(key)) {
+      args.put(key, null);
     }
-    args.get(key).add(value);
   }
 
   /**
