@@ -27,10 +27,11 @@ import io.netty.util.ReferenceCountUtil;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.Queue;
 import java.util.Random;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -46,9 +47,7 @@ import static org.junit.Assert.fail;
  * Integration tests for Admin.
  */
 public class AdminIntegrationTest {
-  private static final String SERVER_HOSTNAME = "localhost";
   private static final int SERVER_PORT = 16503;
-
   private static final ClusterMap CLUSTER_MAP;
 
   static {
@@ -60,17 +59,19 @@ public class AdminIntegrationTest {
   }
 
   private static RestServer adminRestServer = null;
+  private static NettyClient nettyClient = null;
 
   /**
    * Sets up an admin server.
    * @throws InstantiationException
-   * @throws IOException
+   * @throws InterruptedException
    */
   @BeforeClass
   public static void setup()
-      throws InstantiationException, IOException {
+      throws InstantiationException, InterruptedException {
     adminRestServer = new RestServer(buildAdminVProps(), CLUSTER_MAP, new LoggingNotificationSystem());
     adminRestServer.start();
+    nettyClient = new NettyClient("localhost", SERVER_PORT);
   }
 
   /**
@@ -78,6 +79,9 @@ public class AdminIntegrationTest {
    */
   @AfterClass
   public static void teardown() {
+    if (nettyClient != null) {
+      nettyClient.close();
+    }
     if (adminRestServer != null) {
       adminRestServer.shutdown();
     }
@@ -93,7 +97,7 @@ public class AdminIntegrationTest {
     String inputText = "loremIpsum";
     String uri = AdminBlobStorageService.ECHO + "?" + EchoHandler.TEXT_KEY + "=" + inputText;
     FullHttpRequest request = buildRequest(HttpMethod.GET, uri, null, null);
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(request);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(request, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     assertEquals("Unexpected status", HttpResponseStatus.OK, response.getStatus());
     assertEquals("Unexpected Content-Type", "application/json",
@@ -106,7 +110,7 @@ public class AdminIntegrationTest {
   /**
    * Tests the {@link AdminBlobStorageService#GET_REPLICAS_FOR_BLOB_ID} operation.
    * <p/>
-   * For the each {@link PartitionId} in the {@link ClusterMap}, a {@link BlobId} is created. The string representation
+   * For a random {@link PartitionId} in the {@link ClusterMap}, a {@link BlobId} is created. The string representation
    * is sent to the server as a part of request. The returned replica list is checked for equality against a locally
    * obtained replica list.
    * @throws Exception
@@ -115,24 +119,22 @@ public class AdminIntegrationTest {
   public void getReplicasForBlobIdTest()
       throws Exception {
     List<PartitionId> partitionIds = CLUSTER_MAP.getWritablePartitionIds();
-    for (PartitionId partitionId : partitionIds) {
-      String originalReplicaStr = partitionId.getReplicaIds().toString().replace(", ", ",");
-      BlobId blobId = new BlobId(partitionId);
-      String uri =
-          AdminBlobStorageService.GET_REPLICAS_FOR_BLOB_ID + "?" + GetReplicasForBlobIdHandler.BLOB_ID_KEY + "="
-              + blobId;
-      FullHttpRequest request = buildRequest(HttpMethod.GET, uri, null, null);
-      LinkedBlockingQueue<HttpObject> responseParts = sendRequest(request);
-      HttpResponse response = (HttpResponse) responseParts.poll();
-      assertEquals("Unexpected status", HttpResponseStatus.OK, response.getStatus());
-      assertEquals("Unexpected Content-Type", "application/json",
-          HttpHeaders.getHeader(response, HttpHeaders.Names.CONTENT_TYPE));
-      ByteBuffer buffer = getContent(response, responseParts);
-      JSONObject responseObj = new JSONObject(new String(buffer.array()));
-      String returnedReplicasStr = responseObj.getString(GetReplicasForBlobIdHandler.REPLICAS_KEY).replace("\"", "");
-      assertEquals("Replica IDs returned for the BlobId do no match with the replicas IDs of partition",
-          originalReplicaStr, returnedReplicasStr);
-    }
+    PartitionId partitionId = partitionIds.get(new Random().nextInt(partitionIds.size()));
+    String originalReplicaStr = partitionId.getReplicaIds().toString().replace(", ", ",");
+    BlobId blobId = new BlobId(partitionId);
+    String uri =
+        AdminBlobStorageService.GET_REPLICAS_FOR_BLOB_ID + "?" + GetReplicasForBlobIdHandler.BLOB_ID_KEY + "=" + blobId;
+    FullHttpRequest request = buildRequest(HttpMethod.GET, uri, null, null);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(request, null, null).get();
+    HttpResponse response = (HttpResponse) responseParts.poll();
+    assertEquals("Unexpected status", HttpResponseStatus.OK, response.getStatus());
+    assertEquals("Unexpected Content-Type", "application/json",
+        HttpHeaders.getHeader(response, HttpHeaders.Names.CONTENT_TYPE));
+    ByteBuffer buffer = getContent(response, responseParts);
+    JSONObject responseObj = new JSONObject(new String(buffer.array()));
+    String returnedReplicasStr = responseObj.getString(GetReplicasForBlobIdHandler.REPLICAS_KEY).replace("\"", "");
+    assertEquals("Replica IDs returned for the BlobId do no match with the replicas IDs of partition",
+        originalReplicaStr, returnedReplicasStr);
   }
 
   /**
@@ -149,6 +151,8 @@ public class AdminIntegrationTest {
     HttpHeaders headers = new DefaultHttpHeaders();
     setAmbryHeaders(headers, content.capacity(), 7200, false, serviceId, contentType, ownerId);
     headers.set(HttpHeaders.Names.CONTENT_LENGTH, content.capacity());
+    headers.add(RestUtils.Headers.UserMetaData_Header_Prefix + "key1", "value1");
+    headers.add(RestUtils.Headers.UserMetaData_Header_Prefix + "key2", "value2");
 
     String blobId = postBlobAndVerify(headers, content);
     getBlobAndVerify(blobId, headers, content);
@@ -192,17 +196,17 @@ public class AdminIntegrationTest {
    * @param contents the content of the response.
    * @return a {@link ByteBuffer} that contains all the data in {@code contents}.
    */
-  private ByteBuffer getContent(HttpResponse response, LinkedBlockingQueue<HttpObject> contents) {
+  private ByteBuffer getContent(HttpResponse response, Queue<HttpObject> contents)
+      throws InterruptedException {
     long contentLength = HttpHeaders.getContentLength(response, -1);
     if (contentLength == -1) {
       contentLength = HttpHeaders.getIntHeader(response, RestUtils.Headers.BLOB_SIZE, 0);
     }
     ByteBuffer buffer = ByteBuffer.allocate((int) contentLength);
-    HttpContent content = (HttpContent) contents.poll();
-    while (content != null) {
+    for (HttpObject object : contents) {
+      HttpContent content = (HttpContent) object;
       buffer.put(content.content().nioBuffer());
       ReferenceCountUtil.release(content);
-      content = (HttpContent) contents.poll();
     }
     return buffer;
   }
@@ -211,32 +215,10 @@ public class AdminIntegrationTest {
    * Discards all the content in {@code contents}.
    * @param contents the content to discard.
    */
-  private void discardContent(LinkedBlockingQueue<HttpObject> contents) {
-    HttpContent content = (HttpContent) contents.poll();
-    while (content != null) {
-      ReferenceCountUtil.release(content);
-      content = (HttpContent) contents.poll();
-    }
-  }
-
-  /**
-   * Uses a {@link NettyClient} to send the provided {@code request} to the server and returns the response, if any.
-   * If an exception occurs during the operation, throws the exception.
-   * @param request the {@link FullHttpRequest} that needs to be submitted to the server.
-   * @return the {@link LinkedBlockingQueue} that will contain the parts of the response.
-   * @throws Exception
-   */
-  private LinkedBlockingQueue<HttpObject> sendRequest(FullHttpRequest request)
-      throws Exception {
-    NettyClient nettyClient = new NettyClient(SERVER_HOSTNAME, SERVER_PORT, request);
-    try {
-      LinkedBlockingQueue<HttpObject> responseParts = nettyClient.sendRequest();
-      if (!nettyClient.awaitFullResponse(1, TimeUnit.SECONDS)) {
-        throw new IllegalStateException("Did not receive response after waiting for 1 second");
-      }
-      return responseParts;
-    } finally {
-      nettyClient.shutdown();
+  private void discardContent(Queue<HttpObject> contents)
+      throws InterruptedException {
+    for (HttpObject object : contents) {
+      ReferenceCountUtil.release(object);
     }
   }
 
@@ -308,7 +290,7 @@ public class AdminIntegrationTest {
   public String postBlobAndVerify(HttpHeaders headers, ByteBuffer content)
       throws Exception {
     FullHttpRequest httpRequest = buildRequest(HttpMethod.POST, "/", headers, content);
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(httpRequest);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(httpRequest, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     discardContent(responseParts);
     assertEquals("Unexpected response status", HttpResponseStatus.CREATED, response.getStatus());
@@ -334,7 +316,7 @@ public class AdminIntegrationTest {
   public void getBlobAndVerify(String blobId, HttpHeaders expectedHeaders, ByteBuffer expectedContent)
       throws Exception {
     FullHttpRequest httpRequest = buildRequest(HttpMethod.GET, blobId, null, null);
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(httpRequest);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(httpRequest, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     assertEquals("Unexpected response status", HttpResponseStatus.OK, response.getStatus());
     checkCommonGetHeadHeaders(response.headers(), expectedHeaders);
@@ -351,7 +333,7 @@ public class AdminIntegrationTest {
   private void getHeadAndVerify(String blobId, HttpHeaders expectedHeaders)
       throws Exception {
     FullHttpRequest httpRequest = buildRequest(HttpMethod.HEAD, blobId, null, null);
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(httpRequest);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(httpRequest, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     discardContent(responseParts);
     assertEquals("Unexpected response status", HttpResponseStatus.OK, response.getStatus());
@@ -375,6 +357,24 @@ public class AdminIntegrationTest {
       assertEquals(RestUtils.Headers.OWNER_ID + " does not match", expectedHeaders.get(RestUtils.Headers.OWNER_ID),
           HttpHeaders.getHeader(response, RestUtils.Headers.OWNER_ID));
     }
+    verifyUserMetadataHeaders(expectedHeaders, response);
+  }
+
+  /**
+   * Verifies User metadata headers from output, to that sent in during input
+   * @param expectedHeaders the expected headers in the response.
+   * @param response the {@link HttpResponse} which contains the headers of the response.
+   * @throws JSONException
+   */
+  private void verifyUserMetadataHeaders(HttpHeaders expectedHeaders, HttpResponse response)
+      throws JSONException {
+    for (Map.Entry<String, String> header : expectedHeaders) {
+      String key = header.getKey();
+      if (key.startsWith(RestUtils.Headers.UserMetaData_Header_Prefix)) {
+        assertEquals("Value for " + key + "does not match in user metadata", header.getValue(),
+            HttpHeaders.getHeader(response, key));
+      }
+    }
   }
 
   /**
@@ -385,7 +385,7 @@ public class AdminIntegrationTest {
   private void deleteBlobAndVerify(String blobId)
       throws Exception {
     FullHttpRequest httpRequest = buildRequest(HttpMethod.DELETE, blobId, null, null);
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(httpRequest);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(httpRequest, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     discardContent(responseParts);
     assertEquals("Unexpected response status", HttpResponseStatus.ACCEPTED, response.getStatus());
@@ -415,7 +415,7 @@ public class AdminIntegrationTest {
    */
   private void verifyOperationAfterDelete(FullHttpRequest httpRequest)
       throws Exception {
-    LinkedBlockingQueue<HttpObject> responseParts = sendRequest(httpRequest);
+    Queue<HttpObject> responseParts = nettyClient.sendRequest(httpRequest, null, null).get();
     HttpResponse response = (HttpResponse) responseParts.poll();
     discardContent(responseParts);
     assertEquals("Unexpected response status", HttpResponseStatus.GONE, response.getStatus());
