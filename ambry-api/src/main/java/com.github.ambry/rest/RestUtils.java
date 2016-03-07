@@ -90,10 +90,24 @@ public class RestUtils {
      */
     public final static String USER_META_DATA_HEADER_PREFIX = "x-ambry-um-";
 
-    // prefix for old style user metadata that will be served as headers
-    protected final static String USER_META_DATA_OLD_STYLE_PREFIX = "x-ambry-oldstyle-um-";
+    /**
+     *  prefix for old style user metadata that will be served as headers
+     */
+    public final static String USER_META_DATA_OLD_STYLE_PREFIX = "x-ambry-oldstyle-um-";
+  }
 
-    protected final static String X_FORWARDED_FOR = "X-Forwarded-For";
+  /**
+   * Permitted sub-resources of a blob.
+   */
+  public enum SubResource {
+    /**
+     * User metadata and BlobProperties i.e., blob properties returned in headers and user metadata as content/headers.
+     */
+    BlobInfo,
+    /**
+     * User metadata on its own i.e., no "blob properties" headers returned with response.
+     */
+    UserMetadata
   }
 
   private static final int Crc_Size = 8;
