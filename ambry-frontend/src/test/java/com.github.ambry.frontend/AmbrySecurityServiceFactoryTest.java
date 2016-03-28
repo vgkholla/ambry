@@ -13,11 +13,28 @@ import org.junit.Test;
  */
 public class AmbrySecurityServiceFactoryTest {
 
+  /**
+   * Tests intantiation of {@link AmbrySecurityServiceFactory}.
+   * @throws InstantiationException
+   */
   @Test
   public void getAmbrySecurityServiceFactoryTest()
       throws InstantiationException {
-    SecurityService securityService = new AmbrySecurityServiceFactory()
-        .getSecurityService(new VerifiableProperties(new Properties()), new MetricRegistry());
+    SecurityService securityService =
+        new AmbrySecurityServiceFactory(new VerifiableProperties(new Properties()), new MetricRegistry())
+            .getSecurityService();
     Assert.assertNotNull(securityService);
+  }
+
+  /**
+   * Tests instantiation of {@link AmbrySecurityServiceFactory} with bad input.
+   */
+  @Test
+  public void getAmbrySecurityServiceFactoryWithBadInputTest() {
+    try {
+      new AmbrySecurityServiceFactory(null, new MetricRegistry());
+    } catch (IllegalArgumentException e) {
+      // expected. Nothing to do.
+    }
   }
 }

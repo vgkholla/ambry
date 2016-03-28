@@ -9,12 +9,19 @@ import com.github.ambry.rest.SecurityServiceFactory;
 /**
  * Default implementation of {@link SecurityServiceFactory} for Ambry
  * <p/>
- * Returns a new instance of {@link AmbrySecurityService} on {@link #getSecurityService(VerifiableProperties)} call.
+ * Returns a new instance of {@link AmbrySecurityService} on {@link #getSecurityService()} call.
  */
 public class AmbrySecurityServiceFactory implements SecurityServiceFactory {
+  private final VerifiableProperties verifiableProperties;
 
-  public SecurityService getSecurityService(VerifiableProperties verifiableProperties, MetricRegistry metricRegistry)
-      throws InstantiationException {
+  public AmbrySecurityServiceFactory(VerifiableProperties verifiableProperties, MetricRegistry metricRegistry) {
+    if (verifiableProperties == null) {
+      throw new IllegalArgumentException("VerfiableProperties is null");
+    }
+    this.verifiableProperties = verifiableProperties;
+  }
+
+  public SecurityService getSecurityService() {
     FrontendConfig frontendConfig = new FrontendConfig(verifiableProperties);
     return new AmbrySecurityService(frontendConfig);
   }
