@@ -87,13 +87,13 @@ class AmbryBlobStorageService implements BlobStorageService {
   public void shutdown() {
     isUp = false;
     try {
-      if (idConverter != null) {
-        idConverter.close();
-        idConverter = null;
-      }
       if (securityService != null) {
         securityService.close();
         securityService = null;
+      }
+      if (idConverter != null) {
+        idConverter.close();
+        idConverter = null;
       }
       logger.info("AmbryBlobStorageService shutdown complete");
     } catch (IOException e) {
@@ -320,7 +320,7 @@ class AmbryBlobStorageService implements BlobStorageService {
 
     /**
      * Forwards request to the {@link Router} once ID conversion is complete.
-     * @param result The conveted ID. This would be non null when the request executed successfully
+     * @param result The converted ID. This would be non null when the request executed successfully
      * @param exception The exception that was reported on execution of the request
      */
     @Override
@@ -499,29 +499,27 @@ class HeadForGetCallback implements Callback<BlobInfo> {
           public void onCompletion(Void antivirusResult, Exception exception) {
             ReadableStreamChannel response = null;
             try {
-              if (subResource == null) {
-                logger.trace("Forwarding GET after HEAD for {} to the router", blobId);
-                router.getBlob(blobId, new GetCallback(ambryBlobStorageService, restRequest, restResponseChannel));
-              } else {
-                // TODO: if old style, make RestUtils.getUserMetadata() just return null.
-                Map<String, String> userMetadata = RestUtils.buildUserMetadata(routerResult.getUserMetadata());
-                if (shouldSendMetadataAsContent(userMetadata)) {
-                  restResponseChannel.setHeader(RestUtils.Headers.CONTENT_TYPE, "application/octet-stream");
-                  restResponseChannel
-                      .setHeader(RestUtils.Headers.CONTENT_LENGTH, routerResult.getUserMetadata().length);
-                  response = new ByteBufferReadableStreamChannel(ByteBuffer.wrap(routerResult.getUserMetadata()));
+              if (exception == null) {
+                if (subResource == null) {
+                  logger.trace("Forwarding GET after HEAD for {} to the router", blobId);
+                  router.getBlob(blobId, new GetCallback(ambryBlobStorageService, restRequest, restResponseChannel));
                 } else {
-                  setUserMetadataHeaders(userMetadata, restResponseChannel);
-                  restResponseChannel.setHeader(RestUtils.Headers.CONTENT_LENGTH, 0);
-                  response = new ByteBufferReadableStreamChannel(AmbryBlobStorageService.EMPTY_BUFFER);
+                  // TODO: if old style, make RestUtils.getUserMetadata() just return null.
+                  Map<String, String> userMetadata = RestUtils.buildUserMetadata(routerResult.getUserMetadata());
+                  if (shouldSendMetadataAsContent(userMetadata)) {
+                    restResponseChannel.setHeader(RestUtils.Headers.CONTENT_TYPE, "application/octet-stream");
+                    restResponseChannel
+                        .setHeader(RestUtils.Headers.CONTENT_LENGTH, routerResult.getUserMetadata().length);
+                    response = new ByteBufferReadableStreamChannel(ByteBuffer.wrap(routerResult.getUserMetadata()));
+                  } else {
+                    setUserMetadataHeaders(userMetadata, restResponseChannel);
+                    restResponseChannel.setHeader(RestUtils.Headers.CONTENT_LENGTH, 0);
+                    response = new ByteBufferReadableStreamChannel(AmbryBlobStorageService.EMPTY_BUFFER);
+                  }
                 }
               }
             } catch (Exception e) {
-              if (exception != null) {
-                logger.error("Error while processing callback", e);
-              } else {
-                exception = e;
-              }
+              exception = e;
             } finally {
               if (response != null || exception != null) {
                 if (exception != null) {
@@ -708,20 +706,16 @@ class PostCallback implements Callback<String> {
         idConverter.convert(restRequest, result, new Callback<String>() {
           @Override
           public void onCompletion(String result, Exception exception) {
-            try {
-              setResponseHeaders(result);
-            } catch (RestServiceException e) {
-              if (exception != null) {
-                logger.error("Error while processing IdConverter callback", e);
-              } else {
+            if (exception == null) {
+              try {
+                setResponseHeaders(result);
+              } catch (RestServiceException e) {
                 exception = e;
               }
-            } finally {
-              if (exception != null) {
-                ambryBlobStorageService.frontendMetrics.operationError.inc();
-              }
-              ambryBlobStorageService.submitResponse(restRequest, restResponseChannel, null, exception);
+            } else {
+              ambryBlobStorageService.frontendMetrics.operationError.inc();
             }
+            ambryBlobStorageService.submitResponse(restRequest, restResponseChannel, null, exception);
           }
         });
       } else if (exception == null) {
