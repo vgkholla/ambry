@@ -1,6 +1,8 @@
 package com.github.ambry.rest;
 
+import com.codahale.metrics.Counter;
 import com.codahale.metrics.Histogram;
+import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistry;
 
 
@@ -22,6 +24,8 @@ public class RestRequestMetrics {
   protected static final String SC_ROUND_TRIP_TIME_SUFFIX = "ScRoundTripTimeInMs";
 
   protected static final String TOTAL_CPU_TIME_SUFFIX = "TotalCpuTimeInMs";
+  protected static final String OPERATION_RATE_SUFFIX = "Rate";
+  protected static final String OPERATION_ERROR_SUFFIX = "Error";
 
   protected final Histogram nioRequestProcessingTimeInMs;
   protected final Histogram nioResponseProcessingTimeInMs;
@@ -34,6 +38,8 @@ public class RestRequestMetrics {
   protected final Histogram scRoundTripTimeInMs;
 
   protected final Histogram totalCpuTimeInMs;
+  protected final Meter operationRate;
+  protected final Counter operationError;
 
   /**
    * Creates an instance of RestRequestMetrics for {@code requestType} and attaches all the metrics related to the
@@ -68,5 +74,7 @@ public class RestRequestMetrics {
         metricRegistry.histogram(MetricRegistry.name(ownerClass, requestType + SC_ROUND_TRIP_TIME_SUFFIX));
 
     totalCpuTimeInMs = metricRegistry.histogram(MetricRegistry.name(ownerClass, requestType + TOTAL_CPU_TIME_SUFFIX));
+    operationRate = metricRegistry.meter(MetricRegistry.name(ownerClass, requestType + OPERATION_RATE_SUFFIX));
+    operationError = metricRegistry.counter(MetricRegistry.name(ownerClass, requestType + OPERATION_ERROR_SUFFIX));
   }
 }
