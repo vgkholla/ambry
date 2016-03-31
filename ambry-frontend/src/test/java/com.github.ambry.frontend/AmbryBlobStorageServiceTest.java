@@ -1104,7 +1104,7 @@ public class AmbryBlobStorageServiceTest {
   // IdConverter and SecurityService exception testing helpers.
 
   /**
-   * Does the exception pipeling test for {@link IdConverter}.
+   * Does the exception pipelining test for {@link IdConverter}.
    * @param converterFactory the {@link IdConverterFactory} to use to while creating {@link AmbryBlobStorageService}.
    * @param expectedExceptionMsg the expected exception message.
    * @throws InstantiationException
@@ -1120,7 +1120,7 @@ public class AmbryBlobStorageServiceTest {
   }
 
   /**
-   * Does the exception pipeling test for {@link SecurityService}.
+   * Does the exception pipelining test for {@link SecurityService}.
    * @param securityFactory the {@link SecurityServiceFactory} to use to while creating {@link AmbryBlobStorageService}.
    * @param exceptionMsg the expected exception message.
    * @throws InstantiationException
@@ -1154,7 +1154,6 @@ public class AmbryBlobStorageServiceTest {
    */
   private void doExternalServicesBadInputTest(RestMethod[] restMethods, String expectedExceptionMsg)
       throws JSONException {
-
     for (RestMethod restMethod : restMethods) {
       if (restMethod.equals(RestMethod.UNKNOWN)) {
         continue;
@@ -1162,10 +1161,9 @@ public class AmbryBlobStorageServiceTest {
       JSONObject headers = new JSONObject();
       List<ByteBuffer> contents = null;
       if (restMethod.equals(RestMethod.POST)) {
-        setAmbryHeaders(headers, 1, 7200, false, "doExternalServicesBadInputTest", "application/octet-stream",
+        setAmbryHeaders(headers, 0, 7200, false, "doExternalServicesBadInputTest", "application/octet-stream",
             "doExternalServicesBadInputTest");
-        contents = new ArrayList<ByteBuffer>();
-        contents.add(ByteBuffer.allocate(1));
+        contents = new ArrayList<ByteBuffer>(1);
         contents.add(null);
       }
       try {
@@ -1471,6 +1469,9 @@ class BadRSC implements ReadableStreamChannel {
   }
 }
 
+/**
+ * Implementation of {@link Router} that does nothing except respond immediately.
+ */
 class FrontendTestRouter implements Router {
   private boolean isOpen = true;
 
