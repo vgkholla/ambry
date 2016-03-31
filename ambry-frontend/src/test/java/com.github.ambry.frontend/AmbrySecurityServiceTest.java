@@ -1,5 +1,6 @@
 package com.github.ambry.frontend;
 
+import com.codahale.metrics.MetricRegistry;
 import com.github.ambry.config.VerifiableProperties;
 import com.github.ambry.messageformat.BlobInfo;
 import com.github.ambry.messageformat.BlobProperties;
@@ -29,8 +30,6 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.Test;
 
-import static org.junit.Assert.assertTrue;
-
 
 /**
  * Unit tests {@link AmbrySecurityService}
@@ -43,7 +42,8 @@ public class AmbrySecurityServiceTest {
 
   public AmbrySecurityServiceTest()
       throws InstantiationException {
-    securityService = new AmbrySecurityService(new FrontendConfig(new VerifiableProperties(new Properties())));
+    securityService = new AmbrySecurityServiceFactory(new VerifiableProperties(new Properties()), new MetricRegistry())
+        .getSecurityService();
   }
 
   /**
@@ -174,7 +174,6 @@ public class AmbrySecurityServiceTest {
     Assert.assertNull("Exception should not have been thrown", callback.exception);
     Assert.assertEquals("Response should have been set ", ResponseStatus.Ok, restResponseChannel.getResponseStatus());
     Assert.assertEquals("No body is expected in the response", 0, restResponseChannel.getResponseBody().length);
-    checkCommonGetHeadHeaders(restResponseChannel);
     verifyBlobPropertiesHeaders(blobInfo.getBlobProperties(), restResponseChannel);
 
     // Get Blob
@@ -288,10 +287,11 @@ public class AmbrySecurityServiceTest {
    * @param isPrivate {@code true}, if private. {@code false} otherwise
    * @param ttl time to live for the blob
    * @param contentType content type of the blob
-   * @return {@link BlobProperties} created with the passed in parameters
+   * @return {@link com.github.ambry.messageformat.BlobProperties} created with the passsed in params
    */
   private BlobProperties getBlobProperties(long blobSize, boolean isPrivate, long ttl, String contentType) {
-    return new BlobProperties(blobSize, "serviceId", "ownerId", contentType, isPrivate, ttl);
+    BlobProperties blobProperties = new BlobProperties(blobSize, "serviceId", "ownerId", contentType, isPrivate, ttl);
+    return blobProperties;
   }
 
   /**
@@ -302,7 +302,6 @@ public class AmbrySecurityServiceTest {
    */
   private void verifyHeadersForHead(BlobProperties blobProperties, MockRestResponseChannel restResponseChannel)
       throws RestServiceException {
-    checkCommonGetHeadHeaders(restResponseChannel);
     Assert.assertEquals("Last Modified not set", new Date(blobProperties.getCreationTimeInMs()).toString(),
         restResponseChannel.getHeader(RestUtils.Headers.LAST_MODIFIED));
     Assert.assertEquals("Content length mismatch", blobProperties.getBlobSize(),
@@ -322,7 +321,6 @@ public class AmbrySecurityServiceTest {
    */
   private void verifyHeadersForGetBlob(BlobProperties blobProperties, MockRestResponseChannel restResponseChannel)
       throws RestServiceException {
-    checkCommonGetHeadHeaders(restResponseChannel);
     Assert.assertEquals("Blob size mismatch ", blobProperties.getBlobSize(),
         Long.parseLong(restResponseChannel.getHeader(RestUtils.Headers.BLOB_SIZE)));
     if (blobProperties.getContentType() != null) {
@@ -390,15 +388,6 @@ public class AmbrySecurityServiceTest {
       Assert.assertEquals("OwnerId mismatch", blobProperties.getOwnerId(),
           restResponseChannel.getHeader(RestUtils.Headers.OWNER_ID));
     }
-  }
-
-  /**
-   * Checks headers that are common to HEAD and GET.
-   * @param restResponseChannel the {@link RestResponseChannel} to check headers on.
-   */
-  private void checkCommonGetHeadHeaders(MockRestResponseChannel restResponseChannel) {
-    assertTrue("No Date header", restResponseChannel.getHeader(RestUtils.Headers.DATE) != null);
-    assertTrue("No Last-Modified header", restResponseChannel.getHeader("Last-Modified") != null);
   }
 
   /**
