@@ -1,4 +1,5 @@
 # Ambry
+(Dummy)
 Ambry is a distributed object store that supports storage of trillion of small immutable objects (50K -100K) as well as billions of large objects. It was specifically designed to store and serve media objects in web companies. However, it can be used as a general purpose storage system to store DB backups, search indexes or business reports. The system has the following characterisitics: 
 
 1. Highly available and horizontally scalable
