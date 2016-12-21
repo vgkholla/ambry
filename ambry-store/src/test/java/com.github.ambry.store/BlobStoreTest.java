@@ -417,6 +417,7 @@ public class BlobStoreTest {
     ExecutorService executorService = Executors.newFixedThreadPool(putters.size());
     List<Future<CallableResult>> futures = executorService.invokeAll(putters);
     verifyPutFutures(putters, futures);
+    executorService.shutdown();
   }
 
   /**
@@ -434,6 +435,7 @@ public class BlobStoreTest {
     ExecutorService executorService = Executors.newFixedThreadPool(getters.size());
     List<Future<CallableResult>> futures = executorService.invokeAll(getters);
     verifyGetFutures(getters, futures);
+    executorService.shutdown();
   }
 
   /**
@@ -451,6 +453,7 @@ public class BlobStoreTest {
     ExecutorService executorService = Executors.newFixedThreadPool(deleters.size());
     List<Future<CallableResult>> futures = executorService.invokeAll(deleters);
     verifyDeleteFutures(deleters, futures);
+    executorService.shutdown();
   }
 
   /**
@@ -486,6 +489,7 @@ public class BlobStoreTest {
     verifyPutFutures(putters, futures.subList(0, putters.size()));
     verifyGetFutures(getters, futures.subList(putters.size(), putters.size() + getters.size()));
     verifyDeleteFutures(deleters, futures.subList(putters.size() + getters.size(), callables.size()));
+    executorService.shutdown();
   }
 
   /**

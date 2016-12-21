@@ -1191,7 +1191,7 @@ public class IndexTest {
    */
   private void verifyState() throws IOException, StoreException {
     verifyLogSegmentCount(isLogSegmented ? 3 : 1);
-    NavigableMap<Offset, IndexSegment> realIndex = index.indexes;
+    NavigableMap<Offset, IndexSegment> realIndex = index.indexesRef.get();
     assertEquals("Number of index segments does not match expected", referenceIndex.size(), realIndex.size());
     Map.Entry<Offset, IndexSegment> realIndexEntry = realIndex.firstEntry();
     for (Map.Entry<Offset, TreeMap<MockId, IndexValue>> referenceIndexEntry : referenceIndex.entrySet()) {
@@ -1423,7 +1423,7 @@ public class IndexTest {
     };
     reloadIndex(false);
     verifyLogSegmentCount(1);
-    assertEquals("Index should contain exactly one index segment", 1, index.indexes.size());
+    assertEquals("Index should contain exactly one index segment", 1, index.indexesRef.get().size());
     LogSegment segment = log.getFirstSegment();
     assertEquals("End offset not as expected",
         new Offset(segment.getName(), segment.getStartOffset() + PUT_RECORD_SIZE), index.getCurrentEndOffset());

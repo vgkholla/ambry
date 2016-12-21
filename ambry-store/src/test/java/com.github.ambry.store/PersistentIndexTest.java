@@ -1710,7 +1710,7 @@ class MockIndex extends PersistentIndex {
   }
 
   public void deleteAll() {
-    indexes.clear();
+    indexesRef.get().clear();
   }
 
   public void stopScheduler() throws InterruptedException {
@@ -1723,7 +1723,7 @@ class MockIndex extends PersistentIndex {
   }
 
   public IndexSegment getLastSegment() {
-    return super.indexes.lastEntry().getValue();
+    return super.indexesRef.get().lastEntry().getValue();
   }
 }
 
