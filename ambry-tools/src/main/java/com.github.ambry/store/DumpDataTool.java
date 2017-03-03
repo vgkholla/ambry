@@ -280,7 +280,7 @@ public class DumpDataTool {
     } else if (!logBlobRecordInfo.isDeleted && isExpired != logBlobRecordInfo.isExpired) {
       logger.error(
           "Expiration value mismatch for " + logBlobRecordInfo.blobId + " Index value " + isExpired + ", Log value "
-              + logBlobRecordInfo.isExpired + ", index TTL in ms " + indexValue.getExpiresAtMs()
+              + logBlobRecordInfo.isExpired + ", index expires at in ms " + indexValue.getExpiresAtMs()
               + ", log Time to live in secs " + logBlobRecordInfo.timeToLiveInSeconds + ", in ms "
               + TimeUnit.SECONDS.toMillis(logBlobRecordInfo.timeToLiveInSeconds));
     } else if (!blobId.equals(logBlobRecordInfo.blobId.getID())) {

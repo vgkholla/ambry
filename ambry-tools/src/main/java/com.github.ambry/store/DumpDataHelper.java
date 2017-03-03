@@ -78,7 +78,7 @@ class DumpDataHelper {
           != MessageFormatRecord.Message_Header_Invalid_Relative_Offset) {
         BlobProperties props = MessageFormatRecord.deserializeBlobProperties(streamlog);
         timeToLiveInSeconds = props.getTimeToLiveInSeconds();
-        isExpired = timeToLiveInSeconds != -1 ? isExpired(TimeUnit.SECONDS.toMillis(timeToLiveInSeconds)) : false;
+        isExpired = timeToLiveInSeconds != -1 && isExpired(TimeUnit.SECONDS.toMillis(timeToLiveInSeconds));
         blobProperty = " Blob properties - blobSize  " + props.getBlobSize() + " serviceId " + props.getServiceId()
             + ", isExpired " + isExpired;
         ByteBuffer metadata = MessageFormatRecord.deserializeUserMetadata(streamlog);

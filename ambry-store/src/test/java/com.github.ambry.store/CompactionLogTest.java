@@ -219,6 +219,7 @@ public class CompactionLogTest {
     cLog.close();
   }
 
+
   /**
    * Tests for construction of {@link CompactionLog} with bad arguments/state.
    * @throws IOException
