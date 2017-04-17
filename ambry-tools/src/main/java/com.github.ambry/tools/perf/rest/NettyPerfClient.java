@@ -42,6 +42,7 @@ import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpChunkedInput;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
@@ -84,6 +85,8 @@ public class NettyPerfClient {
   private final int concurrency;
   private final long totalSize;
   private final byte[] chunk;
+  private final boolean varyBlobSize;
+  private final int blobIdPrintPercent;
   private final SSLFactory sslFactory;
   private final Bootstrap b = new Bootstrap();
   private final ChannelConnectListener channelConnectListener = new ChannelConnectListener();
@@ -92,6 +95,7 @@ public class NettyPerfClient {
   private final PerfClientMetrics perfClientMetrics = new PerfClientMetrics(metricRegistry);
   private final CountDownLatch shutdownLatch = new CountDownLatch(1);
   private final AtomicLong totalRequestCount = new AtomicLong(0);
+  private final Random random = new Random();
 
   private EventLoopGroup group;
   private long perfClientStartTime;
@@ -108,6 +112,8 @@ public class NettyPerfClient {
     final Integer concurrency;
     final Long postBlobTotalSize;
     final Integer postBlobChunkSize;
+    final Boolean varyPostBlobSize;
+    final Double blobIdPrintFraction;
     final String sslPropsFilePath;
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -115,47 +121,56 @@ public class NettyPerfClient {
      * Parses the arguments provided and extracts them into variables that can be retrieved.
      * @param args the command line argument list.
      */
-    protected ClientArgs(String args[]) {
+    ClientArgs(String args[]) {
       OptionParser parser = new OptionParser();
       ArgumentAcceptingOptionSpec<String> host = parser.accepts("host", "Front end host to contact")
-          .withOptionalArg()
+          .withRequiredArg()
           .describedAs("host")
           .ofType(String.class)
           .defaultsTo("localhost");
       ArgumentAcceptingOptionSpec<Integer> port = parser.accepts("port", "Front end port")
-          .withOptionalArg()
+          .withRequiredArg()
           .describedAs("port")
           .ofType(Integer.class)
           .defaultsTo(1174);
       ArgumentAcceptingOptionSpec<String> path = parser.accepts("path", "Resource path (prefix with a '/')")
-          .withOptionalArg()
+          .withRequiredArg()
           .describedAs("path")
           .ofType(String.class)
           .defaultsTo("/");
       ArgumentAcceptingOptionSpec<String> requestType =
           parser.accepts("requestType", "The type of request to make (POST, GET)")
-              .withOptionalArg()
+              .withRequiredArg()
               .describedAs("requestType")
               .ofType(String.class)
               .defaultsTo(GET);
       ArgumentAcceptingOptionSpec<Integer> concurrency = parser.accepts("concurrency", "Number of parallel requests")
-          .withOptionalArg()
+          .withRequiredArg()
           .describedAs("concurrency")
           .ofType(Integer.class)
           .defaultsTo(1);
       ArgumentAcceptingOptionSpec<Long> postBlobTotalSize =
           parser.accepts("postBlobTotalSize", "Total size in bytes of blob to be POSTed")
-              .withOptionalArg()
+              .withRequiredArg()
               .describedAs("postBlobTotalSize")
               .ofType(Long.class);
       ArgumentAcceptingOptionSpec<Integer> postBlobChunkSize =
           parser.accepts("postBlobChunkSize", "Size in bytes of each chunk that will be POSTed")
-              .withOptionalArg()
+              .withRequiredArg()
               .describedAs("postBlobChunkSize")
               .ofType(Integer.class);
+      ArgumentAcceptingOptionSpec<Boolean> varyPostBlobSize = parser.accepts("varyPostBlobSize",
+          "If true, the actual size of the blob POSTed will be a random number between 0 and postBlobTotalSize (both "
+              + "inclusive)").withOptionalArg().describedAs("varyPostBlobSize").ofType(Boolean.class);
+      ArgumentAcceptingOptionSpec<Double> blobIdPrintFraction = parser.accepts("blobIdPrintFraction",
+          "The fraction of POSTed blobs whose IDs will be logged. Has to be between 0.0 and 1.0")
+          .withRequiredArg()
+          .describedAs("blobIdPrintFraction")
+          .ofType(Double.class)
+          .defaultsTo(0.0);
       ArgumentAcceptingOptionSpec<String> sslPropsFilePath =
           parser.accepts("sslPropsFilePath", "The path to the properties file with SSL settings")
-              .withOptionalArg()
+              .withRequiredArg()
               .describedAs("sslPropsFilePath")
               .ofType(String.class);
 
@@ -167,6 +182,8 @@ public class NettyPerfClient {
       this.concurrency = options.valueOf(concurrency);
       this.postBlobTotalSize = options.valueOf(postBlobTotalSize);
       this.postBlobChunkSize = options.valueOf(postBlobChunkSize);
+      this.varyPostBlobSize = options.has(varyPostBlobSize);
+      this.blobIdPrintFraction = options.valueOf(blobIdPrintFraction);
       this.sslPropsFilePath = options.valueOf(sslPropsFilePath);
       validateArgs();
 
@@ -177,6 +194,8 @@ public class NettyPerfClient {
       logger.info("Concurrency: {}", this.concurrency);
       logger.info("Post blob total size: {}", this.postBlobTotalSize);
       logger.info("Post blob chunk size: {}", this.postBlobChunkSize);
+      logger.info("Vary blob size: {}", this.varyPostBlobSize);
+      logger.info("Blob ID print fraction: {}", this.blobIdPrintFraction);
       logger.info("SSL properties file path: {}", this.sslPropsFilePath);
     }
 
@@ -186,10 +205,15 @@ public class NettyPerfClient {
     private void validateArgs() {
       if (!SUPPORTED_REQUEST_TYPES.contains(requestType)) {
         throw new IllegalArgumentException("Unsupported request type: " + requestType);
-      } else if (requestType.equals(POST) && (postBlobTotalSize == null || postBlobTotalSize <= 0
-          || postBlobChunkSize == null || postBlobChunkSize <= 0)) {
-        throw new IllegalArgumentException(
-            "Total size to be posted and size of each chunk need to be specified with POST and have to be > 0");
+      } else if (requestType.equals(POST)) {
+        if (postBlobTotalSize == null || postBlobTotalSize <= 0) {
+          throw new IllegalArgumentException(
+              "Total size to be POSTed needs to be specified with POST and has to be > 0");
+        } else if (postBlobChunkSize == null || postBlobChunkSize <= 0) {
+          throw new IllegalArgumentException("Size of each chunk needs to be specified with POST and have to be > 0");
+        } else if (blobIdPrintFraction < 0 || blobIdPrintFraction > 1) {
+          throw new IllegalArgumentException("blobIdPrintFraction has to between 0.0 and 1.0");
+        }
       }
     }
   }
@@ -203,7 +227,8 @@ public class NettyPerfClient {
       ClientArgs clientArgs = new ClientArgs(args);
       final NettyPerfClient nettyPerfClient =
           new NettyPerfClient(clientArgs.host, clientArgs.port, clientArgs.path, clientArgs.concurrency,
-              clientArgs.postBlobTotalSize, clientArgs.postBlobChunkSize, clientArgs.sslPropsFilePath);
+              clientArgs.postBlobTotalSize, clientArgs.postBlobChunkSize, clientArgs.varyPostBlobSize,
+              clientArgs.blobIdPrintFraction, clientArgs.sslPropsFilePath);
       // attach shutdown handler to catch control-c
       Runtime.getRuntime().addShutdownHook(new Thread() {
         public void run() {
@@ -226,12 +251,17 @@ public class NettyPerfClient {
    * @param concurrency number of parallel requests.
    * @param totalSize the total size in bytes of a blob to be POSTed ({@code null} if non-POST).
    * @param chunkSize size in bytes of each chunk to be POSTed ({@code null} if non-POST).
+   * @param varyPostBlobSize {@code true} if the blob that is POSTed needs to be varied in size. The variation will be
+   *                                     between 0 and {@code totalSize} (inclusive). {@code false} otherwise (ignored
+   *                                     if non-POST).
+   * @param blobIdPrintFraction the fraction of blobs whose IDs need to be printed. (ignored if non-POST).
    * @param sslPropsFilePath the path to the SSL properties, or {@code null} to disable SSL.
    * @throws IOException
    * @throws GeneralSecurityException
    */
   private NettyPerfClient(String host, int port, String path, int concurrency, Long totalSize, Integer chunkSize,
-      String sslPropsFilePath) throws IOException, GeneralSecurityException {
+      boolean varyPostBlobSize, double blobIdPrintFraction, String sslPropsFilePath)
+      throws IOException, GeneralSecurityException {
     this.host = host;
     this.port = port;
     this.uri = "http://" + host + ":" + port + path;
@@ -240,9 +270,13 @@ public class NettyPerfClient {
       this.totalSize = totalSize;
       chunk = new byte[chunkSize];
       new Random().nextBytes(chunk);
+      varyBlobSize = varyPostBlobSize;
+      this.blobIdPrintPercent = (int) (blobIdPrintFraction * 100);
     } else {
       this.totalSize = 0;
       chunk = null;
+      varyBlobSize = false;
+      this.blobIdPrintPercent = 0;
     }
     sslFactory = sslPropsFilePath != null ? new SSLFactory(
         new SSLConfig(new VerifiableProperties(Utils.loadProps(sslPropsFilePath)))) : null;
@@ -254,7 +288,7 @@ public class NettyPerfClient {
    * Starts the NettyPerfClient.
    * @throws InterruptedException
    */
-  protected void start() throws InterruptedException {
+  private void start() throws InterruptedException {
     logger.info("Starting NettyPerfClient");
     reporter.start();
     group = new NioEventLoopGroup(concurrency);
@@ -282,7 +316,7 @@ public class NettyPerfClient {
   /**
    * Shuts down the NettyPerfClient.
    */
-  protected void shutdown() {
+  private void shutdown() {
     logger.info("Shutting down NettyPerfClient");
     isRunning = false;
     group.shutdownGracefully();
@@ -314,7 +348,7 @@ public class NettyPerfClient {
    * Blocking function to wait on the NettyPerfClient shutting down.
    * @throws InterruptedException
    */
-  protected void awaitShutdown() throws InterruptedException {
+  private void awaitShutdown() throws InterruptedException {
     shutdownLatch.await();
   }
 
@@ -351,6 +385,9 @@ public class NettyPerfClient {
         perfClientMetrics.timeToFirstResponseChunkInMs.update(responseReceiveStart);
         logger.trace("Response receive has started on channel {}. Took {} ms", ctx.channel(), responseReceiveStart);
         response = (HttpResponse) in;
+        if (request.method().equals(HttpMethod.POST) && shouldLogBlobId()) {
+          logger.info("[BlobIdLog] {}", response.headers().get(HttpHeaderNames.LOCATION));
+        }
       }
       if (in instanceof HttpContent) {
         recognized = true;
@@ -427,10 +464,11 @@ public class NettyPerfClient {
      */
     private void reset() {
       if (chunk != null) {
-        chunkedInput = new HttpChunkedInput(new RepeatedBytesInput());
+        long actualSize = varyBlobSize ? Utils.getRandomLong(random, totalSize + 1) : totalSize;
+        chunkedInput = new HttpChunkedInput(new RepeatedBytesInput(actualSize));
         request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, uri);
-        HttpUtil.setContentLength(request, totalSize);
-        request.headers().add(RestUtils.Headers.BLOB_SIZE, totalSize);
+        HttpUtil.setContentLength(request, actualSize);
+        request.headers().add(RestUtils.Headers.BLOB_SIZE, actualSize);
         request.headers().add(RestUtils.Headers.SERVICE_ID, "PerfNettyClient");
         request.headers().add(RestUtils.Headers.AMBRY_CONTENT_TYPE, "application/octet-stream");
       } else {
@@ -444,10 +482,18 @@ public class NettyPerfClient {
     }
 
     /**
+     * @return {@code true} if the blob id needs to be logged, {@code false} otherwise.
+     */
+    private boolean shouldLogBlobId() {
+      return random.nextInt(100) < blobIdPrintPercent;
+    }
+
+    /**
      * Returns a chunk with the same data again and again until a fixed size is reached.
      */
     private class RepeatedBytesInput implements ChunkedInput<ByteBuf> {
       private final AtomicBoolean metricRecorded = new AtomicBoolean(false);
+      private final long dataSize;
 
       private long streamed = 0;
       private long startTime;
@@ -457,15 +503,16 @@ public class NettyPerfClient {
       /**
        * Creates an instance that repeatedly sends the same chunk up to the configured size.
        */
-      protected RepeatedBytesInput() {
-        if (totalSize < 0 || (totalSize > 0 && chunk.length < 1)) {
+      RepeatedBytesInput(long dataSize) {
+        if (dataSize < 0 || (dataSize > 0 && chunk.length < 1)) {
           throw new IllegalArgumentException("Invalid argument(s)");
         }
+        this.dataSize = dataSize;
       }
 
       @Override
       public boolean isEndOfInput() {
-        boolean isEndOfInput = streamed >= totalSize;
+        boolean isEndOfInput = streamed >= dataSize;
         if (isEndOfInput && metricRecorded.compareAndSet(false, true)) {
           long postChunksTime = System.currentTimeMillis() - startTime;
           perfClientMetrics.postChunksTimeInMs.update(postChunksTime);
@@ -492,7 +539,7 @@ public class NettyPerfClient {
         }
         if (!isEndOfInput()) {
           long currentChunkSendTime = System.currentTimeMillis();
-          int remaining = (totalSize - streamed) > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) (totalSize - streamed);
+          int remaining = (dataSize - streamed) > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) (dataSize - streamed);
           int toWrite = Math.min(chunk.length, remaining);
           buf = Unpooled.wrappedBuffer(chunk, 0, toWrite);
           streamed += toWrite;
@@ -506,7 +553,7 @@ public class NettyPerfClient {
 
       @Override
       public long length() {
-        return totalSize;
+        return dataSize;
       }
 
       @Override
@@ -534,27 +581,27 @@ public class NettyPerfClient {
    * Metrics that track peformance.
    */
   private static class PerfClientMetrics {
-    public final Meter bytesReceiveRate;
-    public final Meter channelCreationRate;
-    public final Meter requestRate;
+    final Meter bytesReceiveRate;
+    final Meter channelCreationRate;
+    final Meter requestRate;
 
-    public final Histogram delayBetweenChunkReceiveInMs;
-    public final Histogram delayBetweenChunkSendInMs;
-    public final Histogram getContentSizeInBytes;
-    public final Histogram getChunkCount;
-    public final Histogram postChunksTimeInMs;
-    public final Histogram requestRoundTripTimeInMs;
-    public final Histogram timeToFirstResponseChunkInMs;
+    final Histogram delayBetweenChunkReceiveInMs;
+    final Histogram delayBetweenChunkSendInMs;
+    final Histogram getContentSizeInBytes;
+    final Histogram getChunkCount;
+    final Histogram postChunksTimeInMs;
+    final Histogram requestRoundTripTimeInMs;
+    final Histogram timeToFirstResponseChunkInMs;
 
-    public final Counter connectError;
-    public final Counter requestResponseError;
-    public final Counter unexpectedDisconnectionError;
+    final Counter connectError;
+    final Counter requestResponseError;
+    final Counter unexpectedDisconnectionError;
 
     /**
      * Creates an instance of PerfClientMetrics.
      * @param metricRegistry the {@link MetricRegistry} instance to use.
      */
-    protected PerfClientMetrics(MetricRegistry metricRegistry) {
+    PerfClientMetrics(MetricRegistry metricRegistry) {
       bytesReceiveRate = metricRegistry.meter(MetricRegistry.name(ResponseHandler.class, "BytesReceiveRate"));
       channelCreationRate = metricRegistry.meter(MetricRegistry.name(ResponseHandler.class, "ChannelCreationRate"));
       requestRate = metricRegistry.meter(MetricRegistry.name(ResponseHandler.class, "RequestRate"));
