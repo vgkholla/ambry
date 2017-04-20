@@ -39,7 +39,6 @@ import org.slf4j.LoggerFactory;
 class Log implements Write {
   private final String dataDir;
   private final long capacityInBytes;
-  private final boolean isLogSegmented;
   private final StoreMetrics metrics;
   private final Iterator<Pair<String, String>> segmentNameAndFileNameIterator;
   private final ConcurrentSkipListMap<String, LogSegment> segmentsByName =
@@ -63,7 +62,6 @@ class Log implements Write {
   Log(String dataDir, long totalCapacityInBytes, long segmentCapacityInBytes, StoreMetrics metrics) throws IOException {
     this.dataDir = dataDir;
     this.capacityInBytes = totalCapacityInBytes;
-    this.isLogSegmented = totalCapacityInBytes > segmentCapacityInBytes;
     this.metrics = metrics;
     this.segmentNameAndFileNameIterator = Collections.EMPTY_LIST.iterator();
 
@@ -97,7 +95,6 @@ class Log implements Write {
       Iterator<Pair<String, String>> segmentNameAndFileNameIterator) throws IOException {
     this.dataDir = dataDir;
     this.capacityInBytes = totalCapacityInBytes;
-    this.isLogSegmented = isLogSegmented;
     this.metrics = metrics;
     this.segmentNameAndFileNameIterator = segmentNameAndFileNameIterator;
 
@@ -273,13 +270,14 @@ class Log implements Write {
           "Capacity of log [" + capacityInBytes + "] should be a multiple of segment capacity [" + segmentCapacity
               + "]");
     }
-    Pair<String, String> segmentNameAndFilename = getNextSegmentNameAndFilename();
+    Pair<String, String> segmentNameAndFilename = getNextSegmentNameAndFilename(segmentCapacity);
     logger.info("Allocating first segment with name [{}], back by file {} and capacity {} bytes. Total number of "
             + "segments is {}", segmentNameAndFilename.getFirst(), segmentNameAndFilename.getSecond(), segmentCapacity,
         numSegments);
     File segmentFile = allocate(segmentNameAndFilename.getSecond(), segmentCapacity);
     // to be backwards compatible, headers are not written for a log segment if it is the only log segment.
-    return new LogSegment(segmentNameAndFilename.getFirst(), segmentFile, segmentCapacity, metrics, isLogSegmented);
+    return new LogSegment(segmentNameAndFilename.getFirst(), segmentFile, segmentCapacity, metrics,
+        capacityInBytes > segmentCapacity);
   }
 
   /**
@@ -399,7 +397,7 @@ class Log implements Write {
       throw new IllegalStateException(
           "There is no more capacity left in [" + dataDir + "]. Max capacity is [" + capacityInBytes + "]");
     }
-    Pair<String, String> segmentNameAndFilename = getNextSegmentNameAndFilename();
+    Pair<String, String> segmentNameAndFilename = getNextSegmentNameAndFilename(segmentCapacity);
     logger.info("Allocating new segment with name: " + segmentNameAndFilename.getFirst());
     File newSegmentFile = allocate(segmentNameAndFilename.getSecond(), segmentCapacity);
     LogSegment newSegment =
@@ -408,15 +406,16 @@ class Log implements Write {
   }
 
   /**
+   * @param segmentCapacity the capacity of a single segment.
    * @return the name and filename of the segment that is to be created.
    */
-  private Pair<String, String> getNextSegmentNameAndFilename() {
+  private Pair<String, String> getNextSegmentNameAndFilename(long segmentCapacity) {
     Pair<String, String> nameAndFilename;
     if (segmentNameAndFileNameIterator != null && segmentNameAndFileNameIterator.hasNext()) {
       nameAndFilename = segmentNameAndFileNameIterator.next();
     } else if (activeSegment == null) {
       // this code path gets exercised only on first startup
-      String name = LogSegmentNameHelper.generateFirstSegmentName(isLogSegmented);
+      String name = LogSegmentNameHelper.generateFirstSegmentName(capacityInBytes > segmentCapacity);
       nameAndFilename = new Pair<>(name, LogSegmentNameHelper.nameToFilename(name));
     } else {
       String name = LogSegmentNameHelper.getNextPositionName(activeSegment.getName());
