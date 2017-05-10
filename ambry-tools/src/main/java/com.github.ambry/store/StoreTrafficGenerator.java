@@ -212,33 +212,22 @@ public class StoreTrafficGenerator {
         logger.info("Requesting StoreTrafficGenerator shutdown");
         generator.shutdown();
         try {
-		int status = generator.isSuccess() ? 0 : 1;
-    		File tmpFile = new File("/tmp/trafficGenStatus.tmp");
-    		FileOutputStream stream = new FileOutputStream(tmpFile);
-    		stream.write(Integer.toString(status).getBytes());
-    		stream.close();
-    		logger.debug("Renaming {} to {}", tmpFile, shutdownFile);
-    		if (!tmpFile.renameTo(shutdownFile)) {
-      			logger.error("Could not rename {} to {}", tmpFile, shutdownFile);
-   		}
-	} catch(Exception e) {
-		logger.error("Could not shutdown", e);
+          int status = generator.isSuccess() ? 0 : 1;
+          File tmpFile = new File("/tmp/trafficGenStatus.tmp");
+          FileOutputStream stream = new FileOutputStream(tmpFile);
+          stream.write(Integer.toString(status).getBytes());
+          stream.close();
+          logger.debug("Renaming {} to {}", tmpFile, shutdownFile);
+          if (!tmpFile.renameTo(shutdownFile)) {
+            logger.error("Could not rename {} to {}", tmpFile, shutdownFile);
+          }
+        } catch (Exception e) {
+          logger.error("Could not shutdown", e);
         }
       }
     });
     generator.start();
     generator.awaitShutdown();
-    /*
-    int status = generator.isSuccess() ? 0 : 1;
-    File tmpFile = new File("/tmp/trafficGenStatus.tmp");
-    FileOutputStream stream = new FileOutputStream(tmpFile);
-    stream.write(Integer.toString(status).getBytes());
-    stream.close();
-    logger.debug("Renaming {} to {}", tmpFile, shutdownFile);
-    if (!tmpFile.renameTo(shutdownFile)) {
-      logger.error("Could not rename {} to {}", tmpFile, shutdownFile);
-    }
-    System.exit(status);*/
   }
 
   /**
@@ -601,6 +590,7 @@ public class StoreTrafficGenerator {
      * @throws StoreException
      */
     private void reset() throws IOException, StoreException {
+      blobId = null;
       httpMethod = verificationMode ? HttpMethod.GET : httpMethod;
       if (httpMethod.equals(HttpMethod.POST)) {
         request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/");
@@ -622,7 +612,14 @@ public class StoreTrafficGenerator {
         couldReceiveOK = isOKRightNow(blobId);
         request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, blobId);
       } else if (httpMethod.equals(HttpMethod.DELETE)) {
-        blobId = blobIds.get(random.nextInt(blobIds.size()));
+        while (blobId == null) {
+          blobId = blobIds.get(random.nextInt(blobIds.size()));
+          if (!posted.containsKey(blobId)) {
+            // make sure this is not an expired blob. After compaction, expired blobs cannot be deleted
+            IndexValue value = index.findKey(new BlobId(blobId, clusterMap));
+            blobId = index.isExpired(value) ? null : blobId;
+          }
+        }
         deleteCandidates.add(blobId);
         request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.DELETE, blobId);
       }
