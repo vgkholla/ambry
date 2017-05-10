@@ -28,9 +28,18 @@ import com.github.ambry.config.Config;
 import com.github.ambry.config.Default;
 import com.github.ambry.config.StoreConfig;
 import com.github.ambry.config.VerifiableProperties;
+import com.github.ambry.messageformat.BlobData;
 import com.github.ambry.messageformat.BlobStoreRecovery;
+import com.github.ambry.messageformat.BlobType;
+import com.github.ambry.messageformat.MessageFormatException;
+import com.github.ambry.messageformat.MessageFormatFlags;
+import com.github.ambry.messageformat.MessageFormatMetrics;
+import com.github.ambry.messageformat.MessageFormatRecord;
+import com.github.ambry.messageformat.MessageFormatSend;
 import com.github.ambry.rest.RestUtils;
+import com.github.ambry.utils.ByteBufferChannel;
 import com.github.ambry.utils.SystemTime;
+import com.github.ambry.utils.Throttler;
 import com.github.ambry.utils.Time;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -60,12 +69,16 @@ import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.stream.ChunkedInput;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.util.concurrent.GenericFutureListener;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -82,14 +95,14 @@ import org.json.JSONException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 public class StoreTrafficGenerator {
   private static final Logger logger = LoggerFactory.getLogger(StoreTrafficGenerator.class);
 
   private final TrafficGeneratorConfig generatorConfig;
+  private final ClusterMapConfig clusterMapConfig;
+  private final StoreConfig storeConfig;
   private final byte[] blob;
-  private final ClusterMap clusterMap;
-  private final Log log;
-  private final PersistentIndex index;
   private final Bootstrap b = new Bootstrap();
   private final ChannelConnectListener channelConnectListener = new ChannelConnectListener();
   private final MetricRegistry metricRegistry = new MetricRegistry();
@@ -102,6 +115,12 @@ public class StoreTrafficGenerator {
   private final Map<String, Long> posted = new ConcurrentHashMap<>();
   private final Set<String> deleted = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
   private final Set<String> deleteCandidates = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+  private final Map<HttpMethod, Throttler> throttlers = new ConcurrentHashMap<>();
+
+  private ClusterMap clusterMap;
+  private StoreKeyFactory storeKeyFactory;
+  private Log log;
+  private PersistentIndex index;
 
   private EventLoopGroup group;
   private long generatorStartTime;
@@ -123,7 +142,7 @@ public class StoreTrafficGenerator {
     final int port;
 
     @Config("post.blob.max.size")
-    @Default("10 * 1024 * 1024")
+    @Default("4 * 1024 * 1024")
     final int postBlobMaxSize;
 
     @Config("max.posts.per.sec")
@@ -163,11 +182,10 @@ public class StoreTrafficGenerator {
     TrafficGeneratorConfig(VerifiableProperties verifiableProperties) {
       host = verifiableProperties.getString("host", "localhost");
       port = verifiableProperties.getIntInRange("port", 1174, 0, 65536);
-      postBlobMaxSize =
-          verifiableProperties.getIntInRange("post.blob.max.size", 10 * 1024 * 1024, 1, Integer.MAX_VALUE);
+      postBlobMaxSize = verifiableProperties.getIntInRange("post.blob.max.size", 4 * 1024 * 1024, 1, Integer.MAX_VALUE);
       maxPostsPerSec = verifiableProperties.getIntInRange("max.posts.per.sec", 1, 0, Integer.MAX_VALUE);
       maxGetsPerSec = verifiableProperties.getIntInRange("max.gets.per.sec", 30, 0, Integer.MAX_VALUE);
-      maxDeletesPerSec = verifiableProperties.getIntInRange("max.deletes.per.sec", 2, 0, Integer.MAX_VALUE);
+      maxDeletesPerSec = verifiableProperties.getIntInRange("max.deletes.per.sec", 3, 0, Integer.MAX_VALUE);
       storeDirPath = verifiableProperties.getString("store.dir");
       hardwareLayoutFilePath = verifiableProperties.getString("hardware.layout.file.path");
       partitionLayoutFilePath = verifiableProperties.getString("partition.layout.file.path");
@@ -179,6 +197,10 @@ public class StoreTrafficGenerator {
    * @param args command line arguments.
    */
   public static void main(String[] args) throws Exception {
+    final File shutdownFile = new File("/tmp/trafficGenStatus");
+    if (shutdownFile.exists() && !shutdownFile.delete()) {
+      logger.error("Could not delete {}", shutdownFile);
+    }
     VerifiableProperties verifiableProperties = StoreToolsUtil.getVerifiableProperties(args);
     final StoreTrafficGenerator generator = new StoreTrafficGenerator(new TrafficGeneratorConfig(verifiableProperties),
         new ClusterMapConfig(verifiableProperties), new StoreConfig(verifiableProperties));
@@ -189,10 +211,34 @@ public class StoreTrafficGenerator {
         generator.verifyPostsAndDeletes();
         logger.info("Requesting StoreTrafficGenerator shutdown");
         generator.shutdown();
+        try {
+		int status = generator.isSuccess() ? 0 : 1;
+    		File tmpFile = new File("/tmp/trafficGenStatus.tmp");
+    		FileOutputStream stream = new FileOutputStream(tmpFile);
+    		stream.write(Integer.toString(status).getBytes());
+    		stream.close();
+    		logger.debug("Renaming {} to {}", tmpFile, shutdownFile);
+    		if (!tmpFile.renameTo(shutdownFile)) {
+      			logger.error("Could not rename {} to {}", tmpFile, shutdownFile);
+   		}
+	} catch(Exception e) {
+		logger.error("Could not shutdown", e);
+        }
       }
     });
     generator.start();
     generator.awaitShutdown();
+    /*
+    int status = generator.isSuccess() ? 0 : 1;
+    File tmpFile = new File("/tmp/trafficGenStatus.tmp");
+    FileOutputStream stream = new FileOutputStream(tmpFile);
+    stream.write(Integer.toString(status).getBytes());
+    stream.close();
+    logger.debug("Renaming {} to {}", tmpFile, shutdownFile);
+    if (!tmpFile.renameTo(shutdownFile)) {
+      logger.error("Could not rename {} to {}", tmpFile, shutdownFile);
+    }
+    System.exit(status);*/
   }
 
   /**
@@ -205,24 +251,33 @@ public class StoreTrafficGenerator {
   private StoreTrafficGenerator(TrafficGeneratorConfig generatorConfig, ClusterMapConfig clusterMapConfig,
       StoreConfig storeConfig) throws IOException, JSONException, StoreException {
     this.generatorConfig = generatorConfig;
+    this.clusterMapConfig = clusterMapConfig;
+    this.storeConfig = storeConfig;
     blob = new byte[generatorConfig.postBlobMaxSize];
     new Random().nextBytes(blob);
-    clusterMap = new StaticClusterAgentsFactory(clusterMapConfig, generatorConfig.hardwareLayoutFilePath,
-        generatorConfig.partitionLayoutFilePath).getClusterMap();
-    StoreMetrics storeMetrics = new StoreMetrics("", metricRegistry);
-    log = new Log(generatorConfig.storeDirPath, Long.MAX_VALUE, -1, storeMetrics);
-    index = new PersistentIndex(generatorConfig.storeDirPath, null, log, storeConfig, new BlobIdFactory(clusterMap),
-        new BlobStoreRecovery(), null, storeMetrics, SystemTime.getInstance(), UUID.randomUUID(), UUID.randomUUID());
     logger.info("Instantiated StoreTrafficGenerator");
   }
 
   /**
    * Starts the StoreTrafficGenerator.
-   * @throws InterruptedException
+   * @throws Exception
    */
-  private void start() throws InterruptedException {
+  private void start() throws Exception {
     logger.info("Starting StoreTrafficGenerator");
     reporter.start();
+    clusterMap = new StaticClusterAgentsFactory(clusterMapConfig, generatorConfig.hardwareLayoutFilePath,
+        generatorConfig.partitionLayoutFilePath).getClusterMap();
+    StoreMetrics storeMetrics = new StoreMetrics("", metricRegistry);
+    storeKeyFactory = new BlobIdFactory(clusterMap);
+    log = new Log(generatorConfig.storeDirPath, Long.MAX_VALUE, -1, storeMetrics);
+    index = new PersistentIndex(generatorConfig.storeDirPath, null, log, storeConfig, storeKeyFactory,
+        new BlobStoreRecovery(), null, storeMetrics, SystemTime.getInstance(), UUID.randomUUID(), UUID.randomUUID());
+    loadAllIds();
+    throttlers.put(HttpMethod.POST, new Throttler(generatorConfig.maxPostsPerSec, 1, true, SystemTime.getInstance()));
+    int getRatePerSec = Math.max(generatorConfig.maxGetsPerSec, 1);
+    throttlers.put(HttpMethod.GET, new Throttler(getRatePerSec, 1, true, SystemTime.getInstance()));
+    throttlers.put(HttpMethod.DELETE,
+        new Throttler(generatorConfig.maxDeletesPerSec, 1, true, SystemTime.getInstance()));
     int concurrency = generatorConfig.maxPostsPerSec + generatorConfig.maxGetsPerSec + generatorConfig.maxDeletesPerSec;
     group = new NioEventLoopGroup(concurrency);
     b.group(group).channel(NioSocketChannel.class).handler(new ChannelInitializer<SocketChannel>() {
@@ -255,9 +310,12 @@ public class StoreTrafficGenerator {
     try {
       blobsToVerify = new LinkedBlockingQueue<>(posted.keySet());
       blobsToVerify.addAll(deleted);
+      int left = blobsToVerify.size();
       verificationMode = true;
-      while (blobsToVerify.size() > 0) {
+      while (left > 0) {
+        logger.info("{} blobs left to verify", left);
         Thread.sleep(1000);
+        left = blobsToVerify.size();
       }
     } catch (InterruptedException e) {
       throw new IllegalStateException(e);
@@ -277,7 +335,13 @@ public class StoreTrafficGenerator {
       } else {
         logger.info("StoreTrafficGenerator shutdown complete");
       }
-    } catch (InterruptedException e) {
+      for (Throttler throttler : throttlers.values()) {
+        throttler.close();
+      }
+      index.close();
+      log.close();
+      clusterMap.close();
+    } catch (Exception e) {
       logger.error("StoreTrafficGenerator shutdown interrupted", e);
     } finally {
       printMetrics();
@@ -323,6 +387,12 @@ public class StoreTrafficGenerator {
     logger.info("Connect errors: {}, Request/Response errors: {}, Unexpected disconnections: {}",
         metrics.connectError.getCount(), metrics.requestResponseError.getCount(),
         metrics.unexpectedDisconnectionError.getCount());
+  }
+
+  private boolean isSuccess() {
+    return (metrics.postError.getCount() + metrics.getError.getCount() + metrics.deleteError.getCount()
+        + metrics.connectError.getCount() + metrics.requestResponseError.getCount()
+        + metrics.unexpectedDisconnectionError.getCount()) == 0;
   }
 
   /**
@@ -395,6 +465,7 @@ public class StoreTrafficGenerator {
           metrics.requestRoundTripTimeInMs.update(requestRoundTripTime);
           if (httpMethod.equals(HttpMethod.POST)) {
             if (response.status().equals(HttpResponseStatus.CREATED)) {
+              blobId = response.headers().get(RestUtils.Headers.LOCATION).substring(1);
               posted.put(blobId, HttpUtil.getContentLength(request));
               blobIds.add(blobId);
             } else {
@@ -409,7 +480,7 @@ public class StoreTrafficGenerator {
                 byte[] recvdBlob = responseBytes.toByteArray();
                 if (posted.containsKey(blobId)) {
                   long size = posted.get(blobId);
-                  for (int i = 0; i < size; i ++) {
+                  for (int i = 0; i < size; i++) {
                     if (blob[i] != recvdBlob[i]) {
                       metrics.getError.inc();
                       logger.error("Data from GET of {} does not match!", blobId);
@@ -417,18 +488,20 @@ public class StoreTrafficGenerator {
                     }
                   }
                 } else {
-                  IndexValue value = index.findKey(new BlobId(blobId, clusterMap));
-                  LogSegment srcLogSegment = log.getSegment(value.getOffset().getName());
-                  byte[] srcBlob = getDataFromLogSegment(srcLogSegment, value.getOffset().getOffset(), value.getSize());
-                  for (int i = 0; i < srcBlob.length; i ++) {
-                    if (srcBlob[i] != recvdBlob[i]) {
-                      metrics.getError.inc();
-                      logger.error("Data from GET of {} does not match!", blobId);
-                      break;
+                  ByteBuffer srcBuf = getBlobDataFromStore().getStream().getByteBuffer();
+                  if (srcBuf.remaining() != recvdBlob.length) {
+                    metrics.getError.inc();
+                    logger.error("Data from GET of {} does not match!", blobId);
+                  } else {
+                    for (byte aRecvdBlob : recvdBlob) {
+                      if (srcBuf.get() != aRecvdBlob) {
+                        metrics.getError.inc();
+                        logger.error("Data from GET of {} does not match!", blobId);
+                        break;
+                      }
                     }
                   }
                 }
-                // TODO: read all content into a ByteArrayOutputStream and then convert it into bytes here and check
               } else {
                 metrics.getError.inc();
                 logger.error("GET of {} should have returned GONE", blobId);
@@ -437,11 +510,19 @@ public class StoreTrafficGenerator {
               // ensure that the 410 response is warranted
               if (couldReceiveOK && !deleteCandidates.contains(blobId) && isOKRightNow(blobId)) {
                 metrics.getError.inc();
-                logger.error("GET of {} failed!", blobId);
+                IndexValue value = index.findKey(new BlobId(blobId, clusterMap));
+                logger.error("GET of {} failed with code {}. Index Value is {}!", blobId, response.status(), value);
               }
-            } else {
+            } else if (response.status().equals(HttpResponseStatus.NOT_FOUND)) {
+              IndexValue value = index.findKey(new BlobId(blobId, clusterMap));
+              if (!index.isExpired(value)) {
+                metrics.getError.inc();
+                logger.error("GET of {} failed with code {}. Index Value is {}!", blobId, response.status(), value);
+              }
+            } else if (posted.containsKey(blobId) || !getBlobDataFromStore().getBlobType()
+                .equals(BlobType.MetadataBlob)) {
               metrics.getError.inc();
-              logger.error("GET of {} failed!", blobId);
+              logger.error("GET of {} failed with code {}!", blobId, response.status());
             }
           } else if (httpMethod.equals(HttpMethod.DELETE)) {
             if (response.status().equals(HttpResponseStatus.ACCEPTED)) {
@@ -487,23 +568,25 @@ public class StoreTrafficGenerator {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-      metrics.requestResponseError.inc();
-      logger.error("Exception caught on channel {} while processing request/response", ctx.channel(), cause);
-      ctx.close();
+      if (!verificationMode || blobId != null) {
+        metrics.requestResponseError.inc();
+        logger.error("Exception caught on channel {} while processing request/response", ctx.channel(), cause);
+        ctx.close();
+      }
     }
 
     /**
      * Sends the request according to the configuration.
      * @param ctx the {@link ChannelHandlerContext} to use to send the request.
-     * @throws IOException
-     * @throws StoreException
+     * @throws Exception
      */
-    private void sendRequest(ChannelHandlerContext ctx) throws IOException, StoreException {
+    private void sendRequest(ChannelHandlerContext ctx) throws Exception {
+      throttlers.get(httpMethod).maybeThrottle(1);
       requestId++;
       long globalId = totalRequestCount.incrementAndGet();
       logger.trace("Sending request with global ID {} and local ID {} on channel {}", globalId, requestId,
           ctx.channel());
-      reset(ctx);
+      reset();
       metrics.requestRate.mark();
       ctx.writeAndFlush(request);
       if (request.method().equals(HttpMethod.POST)) {
@@ -514,11 +597,11 @@ public class StoreTrafficGenerator {
 
     /**
      * Resets all state in preparation for the next request-response.
-     * @param ctx the {@link ChannelHandlerContext} to use to send the request.
      * @throws IOException
      * @throws StoreException
      */
-    private void reset(ChannelHandlerContext ctx) throws IOException, StoreException {
+    private void reset() throws IOException, StoreException {
+      httpMethod = verificationMode ? HttpMethod.GET : httpMethod;
       if (httpMethod.equals(HttpMethod.POST)) {
         request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/");
         int actualSize = random.nextInt(generatorConfig.postBlobMaxSize + 1);
@@ -530,7 +613,9 @@ public class StoreTrafficGenerator {
       } else if (httpMethod.equals(HttpMethod.GET)) {
         if (verificationMode) {
           blobId = blobsToVerify.poll();
-          ctx.close();
+          if (blobId == null) {
+            throw new IllegalArgumentException("There are no more blobs to verify");
+          }
         } else {
           blobId = blobIds.get(random.nextInt(blobIds.size()));
         }
@@ -553,6 +638,8 @@ public class StoreTrafficGenerator {
       boolean isOKRightNow;
       if (deleted.contains(blobId)) {
         isOKRightNow = false;
+      } else if (posted.containsKey(blobId)) {
+        isOKRightNow = true;
       } else {
         IndexValue value = index.findKey(new BlobId(blobId, clusterMap));
         isOKRightNow = !(value.isFlagSet(IndexValue.Flags.Delete_Index) || index.isExpired(value));
@@ -561,22 +648,21 @@ public class StoreTrafficGenerator {
     }
 
     /**
-     * @param logSegment the {@link LogSegment} to get the data from.
-     * @param offset the offset inside {@code logSegment} to start the read at.
-     * @param size the size of the data that must be read.
-     * @return the bytes that were read.
-     * @throws IOException if there was an I/O error while reading.
+     * @return the {@link BlobData} that contains details about the blob.
      */
-    private byte[] getDataFromLogSegment(LogSegment logSegment, long offset, long size) throws IOException {
-      assert size <= Integer.MAX_VALUE : "Cannot read more than " + Integer.MAX_VALUE + " bytes of data";
-      byte[] data = new byte[(int) size];
-      FileChannel fileChannel = logSegment.getView().getSecond();
-      try {
-        fileChannel.read(ByteBuffer.wrap(data), offset);
-      } finally {
-        logSegment.closeView();
+    private BlobData getBlobDataFromStore() throws IOException, MessageFormatException, StoreException {
+      BlobReadOptions options =
+          index.getBlobReadInfo(new BlobId(blobId, clusterMap), EnumSet.allOf(StoreGetOptions.class));
+      StoreMessageReadSet readSet = new StoreMessageReadSet(Arrays.asList(options));
+      MessageFormatSend send =
+          new MessageFormatSend(readSet, MessageFormatFlags.Blob, new MessageFormatMetrics(metricRegistry),
+              storeKeyFactory);
+      ByteBuffer buffer = ByteBuffer.allocate((int) send.sizeInBytes());
+      ByteBufferChannel channel = new ByteBufferChannel(buffer);
+      while (!send.isSendComplete()) {
+        send.writeTo(channel);
       }
-      return data;
+      return MessageFormatRecord.deserializeBlob(new ByteArrayInputStream(buffer.array()));
     }
 
     /**
