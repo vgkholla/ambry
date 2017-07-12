@@ -37,9 +37,10 @@ public class BlobStoreRecovery implements MessageStoreRecovery {
   private Logger logger = LoggerFactory.getLogger(getClass());
 
   @Override
-  public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
+  public List<MessageInfo> recover(Read read, long startOffset, long endOffset, int alignment, StoreKeyFactory factory)
       throws IOException {
     ArrayList<MessageInfo> messageRecovered = new ArrayList<MessageInfo>();
+    startOffset = Utils.getAlignedOffset(startOffset, alignment);
     try {
       while (startOffset < endOffset) {
         // read message header
@@ -88,7 +89,7 @@ public class BlobStoreRecovery implements MessageStoreRecovery {
                       deleteRecord.getAccountId(), deleteRecord.getContainerId(), deleteRecord.getDeletionTimeInMs());
               messageRecovered.add(info);
             }
-            startOffset = stream.getCurrentPosition();
+            startOffset = Utils.getAlignedOffset(stream.getCurrentPosition(), alignment);
             break;
           default:
             throw new MessageFormatException("Version not known while reading message - " + version,

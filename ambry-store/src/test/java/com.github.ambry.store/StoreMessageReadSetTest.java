@@ -81,7 +81,8 @@ public class StoreMessageReadSetTest {
   public void storeMessageReadSetTest() throws IOException {
     int logCapacity = 2000;
     int segCapacity = 1000;
-    Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segCapacity, metrics);
+    int alignment = 4;
+    Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segCapacity, alignment, metrics);
     try {
       LogSegment firstSegment = log.getFirstSegment();
       int availableSegCapacity = (int) (segCapacity - firstSegment.getStartOffset());
@@ -196,8 +197,9 @@ public class StoreMessageReadSetTest {
   public void blobReadOptionsTest() throws IOException {
     int logCapacity = 2000;
     int[] segCapacities = {2000, 1000};
+    int alignment = 4;
     for (int segCapacity : segCapacities) {
-      Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segCapacity, metrics);
+      Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segCapacity, alignment, metrics);
       try {
         LogSegment firstSegment = log.getFirstSegment();
         int availableSegCapacity = (int) (segCapacity - firstSegment.getStartOffset());

@@ -756,6 +756,25 @@ public class Utils {
   }
 
   /**
+   * Gets the next offset relative to {@code offset} that is aligned to {@code alignment} . This will be in the range
+   * [{@code offset}, {@code offset} + alignment - 1)].
+   * For example, if alignment is 7,
+   * for offset 0 - aligned offset = 0
+   * for 1,2,3,4,5,6,7 - aligned offset = 7
+   * @param offset the offset relative to which an aligned offset is required.
+   * @param alignment the alignment to use to calculate the aligned offset
+   * @return the next offset aligned to {@code alignment} relative to {@code offset}
+   */
+  public static long getAlignedOffset(long offset, int alignment) {
+    long alignedOffset = offset;
+    long remainder = offset % alignment;
+    if (remainder != 0) {
+      alignedOffset = offset + (alignment - remainder);
+    }
+    return alignedOffset;
+  }
+
+  /**
    * A thread factory to use for {@link ScheduledExecutorService}s instantiated using
    * {@link #newScheduler(int, String, boolean)}.
    */

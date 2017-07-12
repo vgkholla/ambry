@@ -171,6 +171,13 @@ public class StoreConfig {
   @Default("240000")
   public final int storeStatsIndexEntriesPerSecond;
 
+  /**
+   * Specifies the alignment requirements for the start offset of a new message.
+   */
+  @Config("store.message.alignment")
+  @Default("4096")
+  public final int storeMessageAlignment;
+
   public StoreConfig(VerifiableProperties verifiableProperties) {
 
     storeKeyFactory = verifiableProperties.getString("store.key.factory", "com.github.ambry.commons.BlobIdFactory");
@@ -207,6 +214,7 @@ public class StoreConfig {
         verifiableProperties.getLongInRange("store.stats.wait.timeout.in.secs", 2 * 60, 0, 30 * 60);
     storeStatsIndexEntriesPerSecond =
         verifiableProperties.getIntInRange("store.stats.index.entries.per.second", 240000, 1, Integer.MAX_VALUE);
+    storeMessageAlignment = verifiableProperties.getIntInRange("store.message.alignment", 4096, 1, Integer.MAX_VALUE);
   }
 }
 

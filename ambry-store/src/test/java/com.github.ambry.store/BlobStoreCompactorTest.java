@@ -53,6 +53,7 @@ public class BlobStoreCompactorTest {
   private static final String STORE_ID = "compactor_example_store";
   private static final DiskIOScheduler DISK_IO_SCHEDULER = new DiskIOScheduler(null);
   private static final String EXCEPTION_MSG = UtilsTest.getRandomString(10);
+  private static final int ALIGNMENT = 7;
 
   private final File tempDir;
   private final String tempDirStr;
@@ -214,7 +215,7 @@ public class BlobStoreCompactorTest {
     refreshState(false, true);
     List<String> segmentsUnderCompaction = getLogSegments(0, 2);
     long deleteReferenceTimeMs = reduceValidDataSizeInLogSegments(segmentsUnderCompaction,
-        state.log.getSegmentCapacity() - LogSegment.HEADER_SIZE);
+        state.log.getSegmentCapacity() - LogSegment.getCurrentVersionHeaderSize());
     compactAndVerify(segmentsUnderCompaction, deleteReferenceTimeMs, true);
   }
 
@@ -677,7 +678,7 @@ public class BlobStoreCompactorTest {
     refreshState(true, true);
     List<String> segmentsUnderCompaction = getLogSegments(0, 2);
     long deleteReferenceTimeMs = reduceValidDataSizeInLogSegments(segmentsUnderCompaction,
-        state.log.getSegmentCapacity() - LogSegment.HEADER_SIZE);
+        state.log.getSegmentCapacity() - LogSegment.getCurrentVersionHeaderSize());
     throwExceptionBeforeOperation = true;
     Log log = new InterruptionInducingLog(1, Integer.MAX_VALUE);
     assertTrue("Hard delete should be running", state.index.hardDeleter.isRunning());
@@ -915,7 +916,7 @@ public class BlobStoreCompactorTest {
    */
   private void refreshState(boolean hardDeleteEnabled, boolean initState) throws Exception {
     destroyStateAndCleanDir();
-    state = new CuratedLogIndexState(true, tempDir, hardDeleteEnabled, initState);
+    state = new CuratedLogIndexState(true, tempDir, hardDeleteEnabled, initState, ALIGNMENT);
   }
 
   /**
@@ -1274,7 +1275,7 @@ public class BlobStoreCompactorTest {
       long gen = LogSegmentNameHelper.getGeneration(segmentName);
       if (pos >= lowestPosition && pos <= highestPosition) {
         assertEquals("Generation should have changed", highestGeneration, gen);
-        sizeOfTargetSegments += segment.getEndOffset() - LogSegment.HEADER_SIZE;
+        sizeOfTargetSegments += segment.getEndOffset() - LogSegment.getCurrentVersionHeaderSize();
         targetSegmentNames.add(segmentName);
       } else {
         nonTargetSegmentNames.add(segmentName);
@@ -1562,8 +1563,8 @@ public class BlobStoreCompactorTest {
     List<String> segmentsUnderCompaction = getLogSegments(currentLogSegmentCount, extraSegmentCountRequired - 1);
     // we need enough data to fill two log segments after compaction
     // to allow for non alignment of log segment boundaries, reduce valid size required by the put record size
-    long validSizeRequired =
-        2 * (state.log.getSegmentCapacity() - LogSegment.HEADER_SIZE - CuratedLogIndexState.PUT_RECORD_SIZE);
+    long validSizeRequired = 2 * (state.log.getSegmentCapacity() - LogSegment.getCurrentVersionHeaderSize()
+        - CuratedLogIndexState.PUT_RECORD_SIZE);
     // reduce the data to make sure that all the data fits in two segments
     reduceValidDataSizeInLogSegments(segmentsUnderCompaction, validSizeRequired);
     // reload index to make sure journal is on only the latest log segment
@@ -1943,7 +1944,7 @@ public class BlobStoreCompactorTest {
      */
     InterruptionInducingLog(int addSegmentCallCountToInterruptAt, int dropSegmentCallCountToInterruptAt)
         throws IOException {
-      super(tempDirStr, state.log.getCapacityInBytes(), state.log.getSegmentCapacity(),
+      super(tempDirStr, state.log.getCapacityInBytes(), state.log.getSegmentCapacity(), ALIGNMENT,
           new StoreMetrics(STORE_ID, new MetricRegistry()));
       if (addSegmentCallCountToInterruptAt <= 0 || dropSegmentCallCountToInterruptAt <= 0) {
         throw new IllegalArgumentException("Arguments cannot be <= 0");

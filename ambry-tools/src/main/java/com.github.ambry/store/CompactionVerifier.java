@@ -250,24 +250,17 @@ public class CompactionVerifier implements Closeable {
     StoreMetrics tgtMetrics = new StoreMetrics(verifierConfig.storeId + "-tgt", metricRegistry);
     UUID sessionId = UUID.randomUUID();
     UUID incarnationId = UUID.randomUUID();
-    MessageStoreRecovery recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        return Collections.EMPTY_LIST;
-      }
-    };
     MessageStoreHardDelete hardDelete = new BlobStoreHardDelete();
 
     DiskIOScheduler diskIOScheduler = new DiskIOScheduler(null);
     // load "src compaction" log and index
-    srcLog = new Log(srcDir.getAbsolutePath(), verifierConfig.storeCapacity, -1, srcMetrics);
+    srcLog = new Log(srcDir.getAbsolutePath(), verifierConfig.storeCapacity, -1, 1, srcMetrics);
     srcIndex =
         new PersistentIndex(srcDir.getAbsolutePath(), null, srcLog, storeConfig, storeKeyFactory, null, hardDelete,
             diskIOScheduler, srcMetrics, SystemTime.getInstance(), sessionId, incarnationId);
 
     // load "tgt" compaction log and index
-    tgtLog = new Log(tgtDir.getAbsolutePath(), verifierConfig.storeCapacity, -1, tgtMetrics);
+    tgtLog = new Log(tgtDir.getAbsolutePath(), verifierConfig.storeCapacity, -1, 1, tgtMetrics);
     tgtIndex =
         new PersistentIndex(tgtDir.getAbsolutePath(), null, tgtLog, storeConfig, storeKeyFactory, null, hardDelete,
             diskIOScheduler, tgtMetrics, SystemTime.getInstance(), sessionId, incarnationId);

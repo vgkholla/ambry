@@ -410,6 +410,20 @@ public class UtilsTest {
     }
   }
 
+  /**
+   * Tests for {@link Utils#getAlignedOffset(long, int)}.
+   * @throws IOException
+   */
+  @Test
+  public void getAlignedOffsetTest() throws IOException {
+    for (int alignment = 1; alignment <= 10; alignment++) {
+      for (long i = 0; i < Utils.getRandomLong(TestUtils.RANDOM, 1024) + 1024; i++) {
+        assertEquals("Return from getAlignedOffset() not as expected", TestUtils.getAlignedOffset(i, alignment),
+            Utils.getAlignedOffset(i, alignment));
+      }
+    }
+  }
+
   private static final String CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   static Random random = new Random();
 

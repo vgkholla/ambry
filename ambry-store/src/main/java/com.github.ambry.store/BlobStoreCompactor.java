@@ -430,8 +430,9 @@ class BlobStoreCompactor {
     long targetLogTotalCapacity = srcLog.getSegmentCapacity();
     logger.debug("Target log capacity is {} for {}. Existing log segments are {}. Future names and files are {}",
         targetLogTotalCapacity, storeId, existingTargetLogSegments, targetSegmentNamesAndFilenames);
-    tgtLog = new Log(dataDir.getAbsolutePath(), targetLogTotalCapacity, srcLog.getSegmentCapacity(), tgtMetrics, true,
-        existingTargetLogSegments, targetSegmentNamesAndFilenames.iterator());
+    tgtLog = new Log(dataDir.getAbsolutePath(), targetLogTotalCapacity, srcLog.getSegmentCapacity(),
+        config.storeMessageAlignment, tgtMetrics, true, existingTargetLogSegments,
+        targetSegmentNamesAndFilenames.iterator());
     Journal journal = new Journal(dataDir.getAbsolutePath(), 2 * config.storeIndexMaxNumberOfInmemElements,
         config.storeMaxNumberOfEntriesToReturnFromJournal);
     tgtIndex = new PersistentIndex(dataDir.getAbsolutePath(), null, tgtLog, config, storeKeyFactory, null, null,
@@ -699,13 +700,12 @@ class BlobStoreCompactor {
   private boolean copyRecords(LogSegment logSegmentToCopy, List<IndexEntry> srcIndexEntries, long lastModifiedTimeSecs)
       throws IOException, StoreException {
     boolean copiedAll = true;
-    long totalCapacity = tgtLog.getCapacityInBytes();
     long writtenLastTime = 0;
     try (FileChannel fileChannel = Utils.openChannel(logSegmentToCopy.getView().getFirst(), false)) {
       for (IndexEntry srcIndexEntry : srcIndexEntries) {
         IndexValue srcValue = srcIndexEntry.getValue();
         long usedCapacity = tgtIndex.getLogUsedCapacity();
-        if (isActive && (tgtLog.getCapacityInBytes() - usedCapacity >= srcValue.getSize())) {
+        if (isActive && tgtLog.hasCapacity(srcValue.getSize())) {
           fileChannel.position(srcValue.getOffset().getOffset());
           Offset endOffsetOfLastMessage = tgtLog.getEndOffset();
           // call into diskIOScheduler to make sure we can proceed (assuming it won't be 0).
@@ -744,7 +744,7 @@ class BlobStoreCompactor {
           // this is the extra segment, so it is ok to run out of space.
           logger.info(
               "There is no more capacity in the destination log in {}. Total capacity is {}. Used capacity is {}."
-                  + " Segment that was being copied is {}", storeId, totalCapacity, usedCapacity,
+                  + " Segment that was being copied is {}", storeId, tgtLog.getCapacityInBytes(), usedCapacity,
               logSegmentToCopy.getName());
           copiedAll = false;
           break;

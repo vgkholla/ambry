@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 class Log implements Write {
   private final String dataDir;
   private final long capacityInBytes;
+  private final int alignment;
   private final boolean isLogSegmented;
   private final StoreMetrics metrics;
   private final Iterator<Pair<String, String>> segmentNameAndFileNameIterator;
@@ -54,15 +55,21 @@ class Log implements Write {
    * @param dataDir the directory where the segments of the log need to be loaded from.
    * @param totalCapacityInBytes the total capacity of this log.
    * @param segmentCapacityInBytes the capacity of a single segment in the log.
+   * @param alignment the alignment for the start offset of every new message written into the segment.
    * @param metrics the {@link StoreMetrics} instance to use.
    * @throws IOException if there is any I/O error loading the segment files.
    * @throws IllegalArgumentException if {@code totalCapacityInBytes} or {@code segmentCapacityInBytes} <= 0 or if
    * {@code totalCapacityInBytes} > {@code segmentCapacityInBytes} and {@code totalCapacityInBytes} is not a perfect
    * multiple of {@code segmentCapacityInBytes}.
    */
-  Log(String dataDir, long totalCapacityInBytes, long segmentCapacityInBytes, StoreMetrics metrics) throws IOException {
+  Log(String dataDir, long totalCapacityInBytes, long segmentCapacityInBytes, int alignment, StoreMetrics metrics)
+      throws IOException {
+    if (alignment < 1) {
+      throw new IllegalArgumentException("Alignment cannot be <=1. Is: " + alignment);
+    }
     this.dataDir = dataDir;
     this.capacityInBytes = totalCapacityInBytes;
+    this.alignment = alignment;
     this.isLogSegmented = totalCapacityInBytes > segmentCapacityInBytes;
     this.metrics = metrics;
     this.segmentNameAndFileNameIterator = Collections.EMPTY_LIST.iterator();
@@ -81,6 +88,7 @@ class Log implements Write {
    * @param dataDir the directory where the segments of the log need to be loaded from.
    * @param totalCapacityInBytes the total capacity of this log.
    * @param segmentCapacityInBytes the capacity of a single segment in the log.
+   * @param alignment the alignment for the start offset of every new message written into the segment.
    * @param metrics the {@link StoreMetrics} instance to use.
    * @param isLogSegmented {@code true} if this log is segmented or needs to be segmented.
    * @param segmentsToLoad the list of pre-created {@link LogSegment} instances to load.
@@ -92,11 +100,15 @@ class Log implements Write {
    * {@code totalCapacityInBytes} > {@code segmentCapacityInBytes} and {@code totalCapacityInBytes} is not a perfect
    * multiple of {@code segmentCapacityInBytes}.
    */
-  Log(String dataDir, long totalCapacityInBytes, long segmentCapacityInBytes, StoreMetrics metrics,
+  Log(String dataDir, long totalCapacityInBytes, long segmentCapacityInBytes, int alignment, StoreMetrics metrics,
       boolean isLogSegmented, List<LogSegment> segmentsToLoad,
       Iterator<Pair<String, String>> segmentNameAndFileNameIterator) throws IOException {
+    if (alignment < 1) {
+      throw new IllegalArgumentException("Alignment cannot be <=1. Is: " + alignment);
+    }
     this.dataDir = dataDir;
     this.capacityInBytes = totalCapacityInBytes;
+    this.alignment = alignment;
     this.isLogSegmented = isLogSegmented;
     this.metrics = metrics;
     this.segmentNameAndFileNameIterator = segmentNameAndFileNameIterator;
@@ -262,8 +274,8 @@ class Log implements Write {
   private LogSegment checkArgsAndGetFirstSegment(long segmentCapacity) throws IOException {
     if (capacityInBytes <= 0 || segmentCapacity <= 0) {
       throw new IllegalArgumentException(
-          "One of totalCapacityInBytes [" + capacityInBytes + "] or " + "segmentCapacityInBytes [" + segmentCapacity
-              + "] is <=0");
+          "One of totalCapacityInBytes [" + capacityInBytes + "] or segmentCapacityInBytes [" + segmentCapacity + "] is"
+              + " <=0");
     }
     segmentCapacity = Math.min(capacityInBytes, segmentCapacity);
     // all segments should be the same size.
@@ -279,7 +291,8 @@ class Log implements Write {
         numSegments);
     File segmentFile = allocate(segmentNameAndFilename.getSecond(), segmentCapacity);
     // to be backwards compatible, headers are not written for a log segment if it is the only log segment.
-    return new LogSegment(segmentNameAndFilename.getFirst(), segmentFile, segmentCapacity, metrics, isLogSegmented);
+    return new LogSegment(segmentNameAndFilename.getFirst(), segmentFile, segmentCapacity, alignment, metrics,
+        isLogSegmented);
   }
 
   /**
@@ -297,7 +310,7 @@ class Log implements Write {
       if (name.isEmpty()) {
         // for backwards compatibility, a single segment log is loaded by providing capacity since the old logs have
         // no headers
-        segment = new LogSegment(name, segmentFile, capacityInBytes, metrics, false);
+        segment = new LogSegment(name, segmentFile, capacityInBytes, alignment, metrics, false);
       } else {
         segment = new LogSegment(name, segmentFile, metrics);
       }
@@ -366,7 +379,7 @@ class Log implements Write {
    *
    */
   private void rollOverIfRequired(long writeSize) throws IOException {
-    if (activeSegment.getCapacityInBytes() - activeSegment.getEndOffset() < writeSize) {
+    if (activeSegment.getRemainingWritableCapacityInBytes() < writeSize) {
       ensureCapacity(writeSize);
       // this cannot be null since capacity has either been ensured or has thrown.
       LogSegment nextActiveSegment = segmentsByName.higherEntry(activeSegment.getName()).getValue();
@@ -388,10 +401,10 @@ class Log implements Write {
   private void ensureCapacity(long writeSize) throws IOException {
     // all segments are (should be) the same size.
     long segmentCapacity = activeSegment.getCapacityInBytes();
-    if (writeSize > segmentCapacity - LogSegment.HEADER_SIZE) {
+    if (writeSize > segmentCapacity - Utils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), alignment)) {
       metrics.overflowWriteError.inc();
       throw new IllegalArgumentException("Write of size [" + writeSize + "] cannot be serviced because it is greater "
-          + "than a single segment's capacity [" + (segmentCapacity - LogSegment.HEADER_SIZE) + "]");
+          + "than a single segment's capacity [" + (segmentCapacity - LogSegment.getCurrentVersionHeaderSize()) + "]");
     }
     if (remainingUnallocatedSegments.decrementAndGet() < 0) {
       remainingUnallocatedSegments.incrementAndGet();
@@ -400,10 +413,10 @@ class Log implements Write {
           "There is no more capacity left in [" + dataDir + "]. Max capacity is [" + capacityInBytes + "]");
     }
     Pair<String, String> segmentNameAndFilename = getNextSegmentNameAndFilename();
-    logger.info("Allocating new segment with name: " + segmentNameAndFilename.getFirst());
+    logger.info("Allocating new segment with name: {}", segmentNameAndFilename.getFirst());
     File newSegmentFile = allocate(segmentNameAndFilename.getSecond(), segmentCapacity);
     LogSegment newSegment =
-        new LogSegment(segmentNameAndFilename.getFirst(), newSegmentFile, segmentCapacity, metrics, true);
+        new LogSegment(segmentNameAndFilename.getFirst(), newSegmentFile, segmentCapacity, alignment, metrics, true);
     segmentsByName.put(segmentNameAndFilename.getFirst(), newSegment);
   }
 
@@ -475,16 +488,31 @@ class Log implements Write {
   FileSpan getFileSpanForMessage(Offset endOffsetOfPrevMessage, long size) {
     LogSegment segment = segmentsByName.get(endOffsetOfPrevMessage.getName());
     long startOffset = endOffsetOfPrevMessage.getOffset();
-    if (startOffset > segment.getEndOffset()) {
-      throw new IllegalArgumentException("Start offset provided is greater than segment end offset");
-    } else if (startOffset == segment.getEndOffset()) {
+    if (startOffset == segment.getEndOffset()) {
       // current segment has ended. Since a blob will be wholly contained within one segment, this blob is in the
       // next segment
       segment = getNextSegment(segment);
       startOffset = segment.getStartOffset();
+    }
+    startOffset = Utils.getAlignedOffset(startOffset, segment.getAlignment());
+    if (startOffset > segment.getEndOffset()) {
+      throw new IllegalArgumentException("Start offset provided is greater than segment end offset");
     } else if (startOffset + size > segment.getEndOffset()) {
       throw new IllegalStateException("Args indicate that blob is not wholly contained within a single segment");
     }
     return new FileSpan(new Offset(segment.getName(), startOffset), new Offset(segment.getName(), startOffset + size));
+  }
+
+  /**
+   * @param writeSize the size of the write.
+   * @return {@code true} if the {@link Log} has capacity for write of size {@code writeSize}. {@code false} otherwise.
+   */
+  boolean hasCapacity(long writeSize) {
+    // this variable will only be used in multi-segment logs.
+    long maxWritePossible =
+        activeSegment.getCapacityInBytes() - Utils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(),
+            alignment);
+    return activeSegment.getRemainingWritableCapacityInBytes() >= writeSize || (remainingUnallocatedSegments.get() > 0
+        && writeSize <= maxWritePossible);
   }
 }

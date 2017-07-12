@@ -290,17 +290,20 @@ class PersistentIndex {
       logger.info("Index : {} performing recovery on index with start offset {} and end offset {}", dataDir,
           recoveryStartOffset, endOffset);
       List<MessageInfo> messagesRecovered =
-          recovery.recover(logSegmentToRecover, recoveryStartOffset.getOffset(), endOffset, factory);
+          recovery.recover(logSegmentToRecover, recoveryStartOffset.getOffset(), endOffset,
+              logSegmentToRecover.getAlignment(), factory);
       recoveryOccurred = recoveryOccurred || messagesRecovered.size() > 0;
-      Offset runningOffset = recoveryStartOffset;
+      long runningOffset = recoveryStartOffset.getOffset();
       // Iterate through the recovered messages and update the index
       for (MessageInfo info : messagesRecovered) {
+        runningOffset = Utils.getAlignedOffset(runningOffset, logSegmentToRecover.getAlignment());
         logger.trace("Index : {} recovering key {} offset {} size {}", dataDir, info.getStoreKey(), runningOffset,
             info.getSize());
-        Offset infoEndOffset = new Offset(runningOffset.getName(), runningOffset.getOffset() + info.getSize());
+        Offset infoStartOffset = new Offset(logSegmentToRecover.getName(), runningOffset);
+        Offset infoEndOffset = new Offset(logSegmentToRecover.getName(), runningOffset + info.getSize());
         IndexValue value = findKey(info.getStoreKey());
         if (info.isDeleted()) {
-          markAsDeleted(info.getStoreKey(), new FileSpan(runningOffset, infoEndOffset), info);
+          markAsDeleted(info.getStoreKey(), new FileSpan(infoStartOffset, infoEndOffset), info);
           logger.info("Index : {} updated message with key {} by inserting delete entry of size {} ttl {}", dataDir,
               info.getStoreKey(), info.getSize(), info.getExpirationTimeInMs());
         } else if (value != null) {
@@ -308,12 +311,12 @@ class PersistentIndex {
               StoreErrorCodes.Initialization_Error);
         } else {
           // create a new entry in the index
-          IndexValue newValue = new IndexValue(info.getSize(), runningOffset, info.getExpirationTimeInMs());
-          addToIndex(new IndexEntry(info.getStoreKey(), newValue, null), new FileSpan(runningOffset, infoEndOffset));
+          IndexValue newValue = new IndexValue(info.getSize(), infoStartOffset, info.getExpirationTimeInMs());
+          addToIndex(new IndexEntry(info.getStoreKey(), newValue, null), new FileSpan(infoStartOffset, infoEndOffset));
           logger.info("Index : {} adding new message to index with key {} size {} ttl {} deleted {}", dataDir,
               info.getStoreKey(), info.getSize(), info.getExpirationTimeInMs(), info.isDeleted());
         }
-        runningOffset = infoEndOffset;
+        runningOffset = infoEndOffset.getOffset();
       }
       logSegmentToRecover = log.getNextSegment(logSegmentToRecover);
       if (logSegmentToRecover != null) {
@@ -749,11 +752,8 @@ class PersistentIndex {
       List<MessageInfo> messageEntries = new ArrayList<MessageInfo>();
       if (!storeToken.getType().equals(StoreFindToken.Type.IndexBased)) {
         startTimeInMs = time.milliseconds();
-        Offset offsetToStart = storeToken.getOffset();
-        if (storeToken.getType().equals(StoreFindToken.Type.Uninitialized)) {
-          offsetToStart = getStartOffset();
-        }
-        logger.trace("Index : " + dataDir + " getting entries since " + offsetToStart);
+        Offset offsetToStart = getStartOffsetForFindEntries(storeToken);
+        logger.trace("Index : {} getting entries since {}", dataDir, offsetToStart);
         // check journal
         List<JournalEntry> entries = journal.getEntriesSince(offsetToStart, storeToken.getInclusive());
         logger.trace("Journal based token, Time used to get entries: {}", (time.milliseconds() - startTimeInMs));
@@ -1232,7 +1232,8 @@ class PersistentIndex {
     Offset startOffset;
     if (indexSegments.size() == 0) {
       LogSegment firstLogSegment = log.getFirstSegment();
-      startOffset = new Offset(firstLogSegment.getName(), firstLogSegment.getStartOffset());
+      startOffset = new Offset(firstLogSegment.getName(),
+          Utils.getAlignedOffset(firstLogSegment.getStartOffset(), firstLogSegment.getAlignment()));
     } else {
       startOffset = indexSegments.firstKey();
     }
@@ -1303,13 +1304,8 @@ class PersistentIndex {
         }
       } else {
         // journal based or empty
-        Offset offsetToStart = storeToken.getOffset();
-        boolean inclusive = false;
-        if (storeToken.getType().equals(StoreFindToken.Type.Uninitialized)) {
-          offsetToStart = getStartOffset();
-          inclusive = true;
-        }
-        List<JournalEntry> entries = journal.getEntriesSince(offsetToStart, inclusive);
+        Offset offsetToStart = getStartOffsetForFindEntries(storeToken);
+        List<JournalEntry> entries = journal.getEntriesSince(offsetToStart, storeToken.getInclusive());
         // we deliberately obtain a snapshot of the index segments AFTER fetching from the journal. This ensures that
         // any and all entries returned from the journal are guaranteed to be in the obtained snapshot of indexSegments.
         ConcurrentSkipListMap<Offset, IndexSegment> indexSegments = validIndexSegments;
@@ -1418,6 +1414,26 @@ class PersistentIndex {
         throw new IllegalStateException("Unrecognized token type: " + token.getType());
     }
     return revalidatedToken;
+  }
+
+  private Offset getStartOffsetForFindEntries(StoreFindToken storeToken) {
+    Offset offsetToStart = storeToken.getOffset();
+    if (storeToken.getType().equals(StoreFindToken.Type.Uninitialized)) {
+      offsetToStart = getStartOffset();
+    } else if (storeToken.getInclusive()) {
+      // the offset might be unaligned. We will have to align it.
+      LogSegment segment = log.getSegment(storeToken.getOffset().getName());
+      if (segment != null) {
+        long alignedOffset = Utils.getAlignedOffset(storeToken.getOffset().getOffset(), segment.getAlignment());
+        if (alignedOffset <= segment.getEndOffset()) {
+          offsetToStart = new Offset(segment.getName(), alignedOffset);
+        }
+      }
+      // we deliberately ignore the else case for both the outer and inner if - the index segment would have rolled over
+      // and the fallback path of not finding entries in the journal can handle that. We don't want to traverse log
+      // segment links at runtime in the log because compaction can transiently add and remove segments.
+    }
+    return offsetToStart;
   }
 
   /**

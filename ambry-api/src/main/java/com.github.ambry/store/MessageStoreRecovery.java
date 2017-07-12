@@ -29,9 +29,12 @@ public interface MessageStoreRecovery {
    * @param startOffset The start offset from where the recovery needs to begin
    * @param endOffset The end offset where the recovery needs to complete. The recovery can end before this offset if
    *                  there were malformed messages
+   * @param alignment the alignment of the messages in {@code read}. The start offset of each message will be aligned to
+   * this number.
    * @param factory The store key factory used to create the store key
    * @return A list of messages that were successfully recovered
    * @throws IOException
    */
-  List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory) throws IOException;
+  List<MessageInfo> recover(Read read, long startOffset, long endOffset, int alignment, StoreKeyFactory factory)
+      throws IOException;
 }

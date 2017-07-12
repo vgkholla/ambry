@@ -127,7 +127,7 @@ class BlobStore implements Store {
         }
 
         StoreDescriptor storeDescriptor = new StoreDescriptor(dataDir);
-        log = new Log(dataDir, capacityInBytes, config.storeSegmentSizeInBytes, metrics);
+        log = new Log(dataDir, capacityInBytes, config.storeSegmentSizeInBytes, config.storeMessageAlignment, metrics);
         compactor =
             new BlobStoreCompactor(dataDir, storeId, factory, config, metrics, diskIOScheduler, log, time, sessionId,
                 storeDescriptor.getIncarnationId());
@@ -402,7 +402,7 @@ class BlobStore implements Store {
    */
   CompactionDetails getCompactionDetails(CompactionPolicy compactionPolicy) throws StoreException {
     return compactionPolicy.getCompactionDetails(capacityInBytes, index.getLogUsedCapacity(), log.getSegmentCapacity(),
-        LogSegment.HEADER_SIZE, index.getLogSegmentsNotInJournal(), blobStoreStats);
+        LogSegment.getCurrentVersionHeaderSize(), index.getLogSegmentsNotInJournal(), blobStoreStats);
   }
 
   @Override

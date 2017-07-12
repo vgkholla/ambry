@@ -40,6 +40,7 @@ import static org.junit.Assert.*;
 public class LogTest {
   private static final long LOG_CAPACITY = 5 * 1024;
   private static final long SEGMENT_CAPACITY = 1024;
+  private static final int ALIGNMENT = 7;
   private static final Appender BUFFER_APPENDER = new Appender() {
     @Override
     public void append(Log log, ByteBuffer buffer) throws IOException {
@@ -93,12 +94,16 @@ public class LogTest {
   @Test
   public void comprehensiveTest() throws IOException {
     Appender[] appenders = {BUFFER_APPENDER, CHANNEL_APPENDER};
+    int[] alignments = {1, 2, ALIGNMENT};
     for (Appender appender : appenders) {
-      // for single segment log
-      setupAndDoComprehensiveTest(LOG_CAPACITY, LOG_CAPACITY, appender);
-      setupAndDoComprehensiveTest(LOG_CAPACITY, LOG_CAPACITY + 1, appender);
-      // for multiple segment log
-      setupAndDoComprehensiveTest(LOG_CAPACITY, SEGMENT_CAPACITY, appender);
+      for (int alignment : alignments) {
+        // for single segment log
+        setupAndDoComprehensiveTest(LOG_CAPACITY, LOG_CAPACITY, alignment, appender);
+        // for multiple segment log
+        setupAndDoComprehensiveTest(LOG_CAPACITY, SEGMENT_CAPACITY, alignment, appender);
+      }
+      // single segment log (no need to test across diff alignments)
+      setupAndDoComprehensiveTest(LOG_CAPACITY, LOG_CAPACITY + 1, ALIGNMENT, appender);
     }
   }
 
@@ -119,7 +124,19 @@ public class LogTest {
 
     for (Pair<Long, Long> logAndSegmentSize : logAndSegmentSizes) {
       try {
-        new Log(tempDir.getAbsolutePath(), logAndSegmentSize.getFirst(), logAndSegmentSize.getSecond(), metrics);
+        new Log(tempDir.getAbsolutePath(), logAndSegmentSize.getFirst(), logAndSegmentSize.getSecond(), ALIGNMENT,
+            metrics);
+        fail("Construction should have failed");
+      } catch (IllegalArgumentException e) {
+        // expected. Nothing to do.
+      }
+    }
+
+    // alignment < 1
+    int[] badAlignments = {0, -1};
+    for (int alignment : badAlignments) {
+      try {
+        new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, alignment, metrics);
         fail("Construction should have failed");
       } catch (IllegalArgumentException e) {
         // expected. Nothing to do.
@@ -129,7 +146,7 @@ public class LogTest {
     // file which is not a directory
     File file = create(LogSegmentNameHelper.nameToFilename(LogSegmentNameHelper.generateFirstSegmentName(false)));
     try {
-      new Log(file.getAbsolutePath(), 1, 1, metrics);
+      new Log(file.getAbsolutePath(), 1, 1, ALIGNMENT, metrics);
       fail("Construction should have failed");
     } catch (IOException e) {
       // expected. Nothing to do.
@@ -142,11 +159,11 @@ public class LogTest {
    */
   @Test
   public void appendErrorCasesTest() throws IOException {
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
     try {
       // write exceeds size of a single segment.
-      ByteBuffer buffer =
-          ByteBuffer.wrap(TestUtils.getRandomBytes((int) (SEGMENT_CAPACITY + 1 - LogSegment.HEADER_SIZE)));
+      long startOffsetOfWrite = TestUtils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), ALIGNMENT);
+      ByteBuffer buffer = ByteBuffer.wrap(TestUtils.getRandomBytes((int) (SEGMENT_CAPACITY + 1 - startOffsetOfWrite)));
       try {
         log.appendFrom(buffer);
         fail("Cannot append a write of size greater than log segment size");
@@ -172,7 +189,7 @@ public class LogTest {
    */
   @Test
   public void setActiveSegmentBadArgsTest() throws IOException {
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
     long numSegments = LOG_CAPACITY / SEGMENT_CAPACITY;
     try {
       log.setActiveSegment(LogSegmentNameHelper.getName(numSegments + 1, 0));
@@ -191,8 +208,8 @@ public class LogTest {
    */
   @Test
   public void getNextSegmentBadArgsTest() throws IOException {
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics);
-    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(1, 1), SEGMENT_CAPACITY, true);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
+    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(1, 1), ALIGNMENT);
     try {
       log.getNextSegment(segment);
       fail("Getting next segment should have failed because provided segment does not exist in the log");
@@ -210,8 +227,8 @@ public class LogTest {
    */
   @Test
   public void getPrevSegmentBadArgsTest() throws IOException {
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics);
-    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(1, 1), SEGMENT_CAPACITY, true);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
+    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(1, 1), ALIGNMENT);
     try {
       log.getPrevSegment(segment);
       fail("Getting prev segment should have failed because provided segment does not exist in the log");
@@ -229,7 +246,7 @@ public class LogTest {
    */
   @Test
   public void getFileSpanForMessageBadArgsTest() throws IOException {
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
     try {
       LogSegment firstSegment = log.getFirstSegment();
       log.setActiveSegment(firstSegment.getName());
@@ -264,20 +281,21 @@ public class LogTest {
   public void addAndDropSegmentTest() throws IOException {
     // start with a segment that has a high position to allow for addition of segments
     long activeSegmentPos = 2 * LOG_CAPACITY / SEGMENT_CAPACITY;
-    LogSegment loadedSegment = getLogSegment(LogSegmentNameHelper.getName(activeSegmentPos, 0), SEGMENT_CAPACITY, true);
+    LogSegment loadedSegment = getLogSegment(LogSegmentNameHelper.getName(activeSegmentPos, 0), ALIGNMENT);
     List<LogSegment> segmentsToLoad = Collections.singletonList(loadedSegment);
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics, true, segmentsToLoad,
-        Collections.EMPTY_LIST.iterator());
+    Log log =
+        new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics, true, segmentsToLoad,
+            Collections.EMPTY_LIST.iterator());
 
     // add a segment
     String segmentName = LogSegmentNameHelper.getName(0, 0);
-    LogSegment uncountedSegment = getLogSegment(segmentName, SEGMENT_CAPACITY, true);
+    LogSegment uncountedSegment = getLogSegment(segmentName, ALIGNMENT);
     log.addSegment(uncountedSegment, false);
     assertEquals("Log segment instance not as expected", uncountedSegment, log.getSegment(segmentName));
 
     // cannot add past the active segment
     segmentName = LogSegmentNameHelper.getName(activeSegmentPos + 1, 0);
-    LogSegment segment = getLogSegment(segmentName, SEGMENT_CAPACITY, true);
+    LogSegment segment = getLogSegment(segmentName, ALIGNMENT);
     try {
       log.addSegment(segment, false);
       fail("Should not be able to add past the active segment");
@@ -290,13 +308,12 @@ public class LogTest {
     int max = (int) (LOG_CAPACITY / SEGMENT_CAPACITY);
     for (int i = 1; i < max; i++) {
       segmentName = LogSegmentNameHelper.getName(i, 0);
-      segment = getLogSegment(segmentName, SEGMENT_CAPACITY, true);
+      segment = getLogSegment(segmentName, ALIGNMENT);
       log.addSegment(segment, true);
     }
 
     // fill up the active segment
-    ByteBuffer buffer =
-        ByteBuffer.allocate((int) (loadedSegment.getCapacityInBytes() - loadedSegment.getStartOffset()));
+    ByteBuffer buffer = ByteBuffer.allocate((int) (loadedSegment.getRemainingWritableCapacityInBytes()));
     CHANNEL_APPENDER.append(log, buffer);
     // write fails because no more log segments can be allocated
     buffer = ByteBuffer.allocate(1);
@@ -336,14 +353,14 @@ public class LogTest {
 
   /**
    * Checks that the constructor that receives segments and segment names iterator,
-   * {@link Log#Log(String, long, long, StoreMetrics, boolean, List, Iterator)}, loads the segments correctly and uses
+   * {@link Log#Log(String, long, long, int, StoreMetrics, boolean, List, Iterator)}, loads the segments correctly and uses
    * the iterator to name new segments and uses the default algorithm once the names run out.
    * @throws IOException
    */
   @Test
   public void logSegmentCustomNamesTest() throws IOException {
     int numSegments = (int) (LOG_CAPACITY / SEGMENT_CAPACITY);
-    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(0, 0), SEGMENT_CAPACITY, true);
+    LogSegment segment = getLogSegment(LogSegmentNameHelper.getName(0, 0), ALIGNMENT);
     long startPos = 2 * numSegments;
     List<Pair<String, String>> expectedSegmentAndFileNames = new ArrayList<>(numSegments);
     expectedSegmentAndFileNames.add(new Pair<>(segment.getName(), segment.getView().getFirst().getName()));
@@ -361,10 +378,10 @@ public class LogTest {
       expectedSegmentAndFileNames.add(new Pair<>(lastName, fileName));
     }
 
-    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, metrics, true,
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics, true,
         Collections.singletonList(segment), segmentNameAndFileNamesDesired.iterator());
     // write enough so that all segments are allocated
-    ByteBuffer buffer = ByteBuffer.allocate((int) (segment.getCapacityInBytes() - segment.getStartOffset()));
+    ByteBuffer buffer = ByteBuffer.allocate((int) (segment.getRemainingWritableCapacityInBytes()));
     for (int i = 0; i < numSegments; i++) {
       buffer.rewind();
       CHANNEL_APPENDER.append(log, buffer);
@@ -377,6 +394,86 @@ public class LogTest {
       segment = log.getNextSegment(segment);
     }
     assertNull("There should be no more segments", segment);
+  }
+
+  /**
+   * Tests creating a {@link Log} with a certain set of configs that change when the log is reloaded.
+   * @throws IOException
+   */
+  @Test
+  public void changingConfigsTest() throws IOException {
+    doChangingConfigsTest(LOG_CAPACITY, LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, ALIGNMENT + 2);
+    cleanDirectory(tempDir);
+    doChangingConfigsTest(LOG_CAPACITY, SEGMENT_CAPACITY, LOG_CAPACITY, ALIGNMENT, ALIGNMENT + 2);
+  }
+
+  /**
+   * Tests that rollover occurs when there is enough unaligned space but not enough aligned space.
+   * @throws IOException
+   */
+  @Test
+  public void rolloverNotEnoughAlignedSpaceTest() throws IOException {
+    assertTrue("This test cannot run with alignment <= 1", ALIGNMENT > 1);
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
+    try {
+      LogSegment segment = log.getFirstSegment();
+      assertEquals("Unexpected alignment", segment.getAlignment(), ALIGNMENT);
+      // write a byte so that we don't create > segment capacity
+      CHANNEL_APPENDER.append(log, ByteBuffer.allocate(1));
+      // we are sure stuff is unaligned now because ALIGNMENT > 1. So data of size of exactly what is left over will
+      // not fit and will have to go into the next segment
+      byte[] buf = TestUtils.getRandomBytes((int) (segment.getCapacityInBytes() - segment.getEndOffset()));
+      CHANNEL_APPENDER.append(log, ByteBuffer.wrap(buf));
+      segment = log.getNextSegment(segment);
+      assertNotNull("There should be a second segment", segment);
+      byte[] readBuf = new byte[buf.length];
+      segment.readInto(ByteBuffer.wrap(readBuf), TestUtils.getAlignedOffset(segment.getStartOffset(), ALIGNMENT));
+      assertArrayEquals("Data read did not match data written", buf, readBuf);
+    } finally {
+      log.close();
+    }
+  }
+
+  /**
+   * Tests that a log with different versions of {@link LogSegment} experiences no problems.
+   * @throws IOException
+   */
+  @Test
+  public void diffVersionsLogSegmentsTest() throws IOException {
+    Log log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
+    try {
+      LogSegment segment = log.getFirstSegment();
+      // rewrite the header on it to make it version 0. Alignment will be ignored.
+      LogSegmentTest.rewriteSegmentHeader(LogSegment.VERSION_0, segment, ALIGNMENT);
+      // reload log to allow changes to take effect
+      log.close();
+      log = new Log(tempDir.getAbsolutePath(), LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, metrics);
+      List<String> segmentNames = new ArrayList<>();
+      segment = log.getFirstSegment();
+      segmentNames.add(segment.getName());
+      // remaining writable capacity in first segment should be capacity - header_version_0_size (no alignment)
+      assertEquals("Unexpected alignment", segment.getAlignment(), 1);
+      assertEquals("Unexpected remaining writable capacity",
+          SEGMENT_CAPACITY - LogSegment.getHeaderSize(LogSegment.VERSION_0),
+          segment.getRemainingWritableCapacityInBytes());
+      writeToLogAndVerify(segment, log, 1, (int) segment.getRemainingWritableCapacityInBytes());
+      // write a byte to trigger rollover
+      CHANNEL_APPENDER.append(log, ByteBuffer.allocate(1));
+      segment = log.getNextSegment(segment);
+      assertNotNull("New segment should have been created", segment);
+      assertEquals("Unexpected alignment", segment.getAlignment(), ALIGNMENT);
+      segmentNames.add(segment.getName());
+      // this one is aligned so verify that the remaining capacity is correct (we wrote one byte)
+      long firstWriteStartOffset = TestUtils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), ALIGNMENT);
+      long nextWriteStartOffset = TestUtils.getAlignedOffset(firstWriteStartOffset + 1, ALIGNMENT);
+      assertEquals("Unexpected remaining writable capacity", SEGMENT_CAPACITY - nextWriteStartOffset,
+          segment.getRemainingWritableCapacityInBytes());
+      writeToLogAndVerify(segment, log, ALIGNMENT, (int) segment.getRemainingWritableCapacityInBytes());
+      // check reload
+      checkLogReload(LOG_CAPACITY, SEGMENT_CAPACITY, ALIGNMENT, segmentNames);
+    } finally {
+      log.close();
+    }
   }
 
   // helpers
@@ -399,14 +496,55 @@ public class LogTest {
   /**
    * Returns a {@link LogSegment} instance with name {@code name} and capacity {@code capacityInBytes}.
    * @param name the name of the {@link LogSegment} instance.
-   * @param capacityInBytes the capacity of the {@link LogSegment} instance.
-   * @param writeHeader {@code true} if headers should be written.
+   * @param alignment the alignment for the start offset of every new message written into the segment.
    * @return a {@link LogSegment} instance with name {@code name} and capacity {@code capacityInBytes}.
    * @throws IOException
    */
-  private LogSegment getLogSegment(String name, long capacityInBytes, boolean writeHeader) throws IOException {
+  private LogSegment getLogSegment(String name, int alignment) throws IOException {
     File file = create(LogSegmentNameHelper.nameToFilename(name));
-    return new LogSegment(name, file, capacityInBytes, metrics, writeHeader);
+    return new LogSegment(name, file, SEGMENT_CAPACITY, alignment, metrics, true);
+  }
+
+  /**
+   * Reads the log for the given {@code fileSpan}. Cannot read across segments.
+   * @param log the {@link Log} to read.
+   * @param fileSpan the {@link FileSpan} to read.
+   * @return the data in the {@code log} in the given {@code fileSpan}.
+   * @throws IOException
+   */
+  private byte[] readFileSpan(Log log, FileSpan fileSpan) throws IOException {
+    Offset readStartOffset = fileSpan.getStartOffset();
+    Offset readEndOffset = fileSpan.getEndOffset();
+    if (!readEndOffset.getName().equals(readStartOffset.getName())) {
+      throw new IllegalArgumentException("Cannot read data across log segments");
+    }
+    LogSegment segment = log.getSegment(readStartOffset.getName());
+    byte[] data = new byte[(int) (readEndOffset.getOffset() - readStartOffset.getOffset())];
+    segment.readInto(ByteBuffer.wrap(data), readStartOffset.getOffset());
+    return data;
+  }
+
+  /**
+   * Writes to the {@code log} and verifies that the {@link FileSpan} returned from it is correct and the data read ==
+   * the data written.
+   * @param segment the segment where the write is expected to go.
+   * @param log the {@link Log} to write data to.
+   * @param alignment the expected alignment in {@code segment}
+   * @param dataSize the size of the data to write.
+   * @throws IOException
+   */
+  private void writeToLogAndVerify(LogSegment segment, Log log, int alignment, int dataSize) throws IOException {
+    assertEquals("Unexpected alignment", segment.getAlignment(), alignment);
+    Offset endOffsetOfLastMessage = log.getEndOffset();
+    long writeStartOffset = TestUtils.getAlignedOffset(segment.getEndOffset(), alignment);
+    FileSpan expectedFileSpan = new FileSpan(new Offset(segment.getName(), writeStartOffset),
+        new Offset(segment.getName(), writeStartOffset + dataSize));
+    byte[] buf = TestUtils.getRandomBytes(dataSize);
+    CHANNEL_APPENDER.append(log, ByteBuffer.wrap(buf));
+    FileSpan fileSpanOfMessage = log.getFileSpanForMessage(endOffsetOfLastMessage, dataSize);
+    assertEquals("FileSpan not as expected", expectedFileSpan, fileSpanOfMessage);
+    byte[] readBuf = readFileSpan(log, expectedFileSpan);
+    assertArrayEquals("Data read is not equal to data written", buf, readBuf);
   }
 
   // comprehensiveTest() helpers
@@ -415,16 +553,17 @@ public class LogTest {
    * Sets up all the required variables for the comprehensive test.
    * @param logCapacity the capacity of the log.
    * @param segmentCapacity the capacity of a single segment in the log.
+   * @param alignment the alignment to use.
    * @param appender the {@link Appender} to use.
    * @throws IOException
    */
-  private void setupAndDoComprehensiveTest(long logCapacity, long segmentCapacity, Appender appender)
+  private void setupAndDoComprehensiveTest(long logCapacity, long segmentCapacity, int alignment, Appender appender)
       throws IOException {
     long numSegments = (logCapacity - 1) / segmentCapacity + 1;
     long maxWriteSize = Math.min(logCapacity, segmentCapacity);
     if (numSegments > 1) {
       // backwards compatibility.
-      maxWriteSize -= LogSegment.HEADER_SIZE;
+      maxWriteSize -= TestUtils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), alignment);
     }
     long[] writeSizes = {1, maxWriteSize, Utils.getRandomLong(TestUtils.RANDOM, maxWriteSize - 2) + 2};
     // the number of segment files to create before creating the log.
@@ -443,10 +582,10 @@ public class LogTest {
             break;
           } else {
             // subsequent startup cases where there have been a few segments created and maybe some are filled.
-            expectedSegmentNames = createSegmentFiles(i, numSegments, segmentCapacity);
+            expectedSegmentNames = createSegmentFiles(i, numSegments, segmentCapacity, alignment);
           }
           expectedSegmentNames = Collections.unmodifiableList(expectedSegmentNames);
-          doComprehensiveTest(logCapacity, segmentCapacity, writeSize, expectedSegmentNames, j, appender);
+          doComprehensiveTest(logCapacity, segmentCapacity, alignment, writeSize, expectedSegmentNames, j, appender);
         }
       }
     }
@@ -456,10 +595,12 @@ public class LogTest {
    * Creates {@code numToCreate} segment files on disk.
    * @param numToCreate the number of segment files to create.
    * @param numFinalSegments the total number of segment files in the log.
+   * @param segmentCapacity the capacity of the segments.
+   * @param alignment the alignment of the segments.
    * @return the names of the created files.
    * @throws IOException
    */
-  private List<String> createSegmentFiles(int numToCreate, long numFinalSegments, long segmentCapacity)
+  private List<String> createSegmentFiles(int numToCreate, long numFinalSegments, long segmentCapacity, int alignment)
       throws IOException {
     if (numToCreate > numFinalSegments) {
       throw new IllegalArgumentException("num segments to create cannot be more than num final segments");
@@ -468,7 +609,7 @@ public class LogTest {
     if (numFinalSegments == 1) {
       String name = LogSegmentNameHelper.generateFirstSegmentName(false);
       File file = create(LogSegmentNameHelper.nameToFilename(name));
-      new LogSegment(name, file, segmentCapacity, metrics, false).close();
+      new LogSegment(name, file, segmentCapacity, alignment, metrics, false).close();
       segmentNames.add(name);
     } else {
       for (int i = 0; i < numToCreate; i++) {
@@ -476,7 +617,7 @@ public class LogTest {
         long gen = Utils.getRandomLong(TestUtils.RANDOM, 1000);
         String name = LogSegmentNameHelper.getName(pos, gen);
         File file = create(LogSegmentNameHelper.nameToFilename(name));
-        new LogSegment(name, file, segmentCapacity, metrics, true).close();
+        new LogSegment(name, file, segmentCapacity, alignment, metrics, true).close();
         segmentNames.add(name);
       }
     }
@@ -509,6 +650,7 @@ public class LogTest {
    * 5. Flushes, closes and validates close.
    * @param logCapacity the log capacity.
    * @param segmentCapacity the capacity of each segment.
+   * @param alignment the alignment to use.
    * @param writeSize the size of each write to the log.
    * @param expectedSegmentNames the expected names of the segments in the log.
    * @param segmentIdxToMarkActive the index of the name of the active segment in {@code expectedSegmentNames}. Also its
@@ -516,28 +658,28 @@ public class LogTest {
    * @param appender the {@link Appender} to use.
    * @throws IOException
    */
-  private void doComprehensiveTest(long logCapacity, long segmentCapacity, long writeSize,
+  private void doComprehensiveTest(long logCapacity, long segmentCapacity, int alignment, long writeSize,
       List<String> expectedSegmentNames, int segmentIdxToMarkActive, Appender appender) throws IOException {
     long numSegments = (logCapacity - 1) / segmentCapacity + 1;
-    Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segmentCapacity, metrics);
+    Log log = new Log(tempDir.getAbsolutePath(), logCapacity, segmentCapacity, alignment, metrics);
     assertEquals("Total capacity not as expected", logCapacity, log.getCapacityInBytes());
     assertEquals("Segment capacity not as expected", Math.min(logCapacity, segmentCapacity), log.getSegmentCapacity());
     try {
       // only preloaded segments should be in expectedSegmentNames.
-      checkLog(log, Math.min(logCapacity, segmentCapacity), numSegments, expectedSegmentNames);
+      checkLog(log, Math.min(logCapacity, segmentCapacity), expectedSegmentNames);
       String activeSegmentName = expectedSegmentNames.get(segmentIdxToMarkActive);
       log.setActiveSegment(activeSegmentName);
       // all segment files from segmentIdxToMarkActive + 1 to expectedSegmentNames.size() - 1 will be freed.
       List<String> prunedSegmentNames = expectedSegmentNames.subList(0, segmentIdxToMarkActive + 1);
-      checkLog(log, Math.min(logCapacity, segmentCapacity), numSegments, prunedSegmentNames);
+      checkLog(log, Math.min(logCapacity, segmentCapacity), prunedSegmentNames);
       List<String> allSegmentNames = getSegmentNames(numSegments, prunedSegmentNames);
-      writeAndCheckLog(log, logCapacity, Math.min(logCapacity, segmentCapacity), numSegments - segmentIdxToMarkActive,
+      writeAndCheckLog(log, Math.min(logCapacity, segmentCapacity), alignment, numSegments - segmentIdxToMarkActive,
           writeSize, allSegmentNames, segmentIdxToMarkActive, appender);
       // log full - so all segments should be there
       assertEquals("Unexpected number of segments", numSegments, allSegmentNames.size());
-      checkLog(log, Math.min(logCapacity, segmentCapacity), numSegments, allSegmentNames);
+      checkLog(log, Math.min(logCapacity, segmentCapacity), allSegmentNames);
       flushCloseAndValidate(log);
-      checkLogReload(logCapacity, Math.min(logCapacity, segmentCapacity), allSegmentNames);
+      checkLogReload(logCapacity, Math.min(logCapacity, segmentCapacity), alignment, allSegmentNames);
     } finally {
       log.close();
       cleanDirectory(tempDir);
@@ -548,12 +690,10 @@ public class LogTest {
    * Checks the log to ensure segment names, capacities and count.
    * @param log the {@link Log} instance to check.
    * @param expectedSegmentCapacity the expected capacity of each segment.
-   * @param numFinalSegments the max number of segments of the log.
    * @param expectedSegmentNames the expected names of all segments that should have been created in the {@code log}.
    * @throws IOException
    */
-  private void checkLog(Log log, long expectedSegmentCapacity, long numFinalSegments, List<String> expectedSegmentNames)
-      throws IOException {
+  private void checkLog(Log log, long expectedSegmentCapacity, List<String> expectedSegmentNames) throws IOException {
     LogSegment nextSegment = log.getFirstSegment();
     assertNull("Prev segment should be null", log.getPrevSegment(nextSegment));
     for (String segmentName : expectedSegmentNames) {
@@ -573,8 +713,8 @@ public class LogTest {
   /**
    * Writes data to the log and checks for end offset (segment and log), roll over and used capacity.
    * @param log the {@link Log} instance to use.
-   * @param logCapacity the total capacity of the {@code log}.
    * @param segmentCapacity the capacity of each segment in the {@code log}.
+   * @param alignment the alignment to use.
    * @param segmentsLeft the number of segments in the log that still have capacity remaining.
    * @param writeSize the size of each write to the log.
    * @param segmentNames the names of *all* the segments in the log including the ones that may not yet have been
@@ -584,49 +724,45 @@ public class LogTest {
    * @param appender the {@link Appender} to use.
    * @throws IOException
    */
-  private void writeAndCheckLog(Log log, long logCapacity, long segmentCapacity, long segmentsLeft, long writeSize,
+  private void writeAndCheckLog(Log log, long segmentCapacity, int alignment, long segmentsLeft, long writeSize,
       List<String> segmentNames, int activeSegmentIdx, Appender appender) throws IOException {
     byte[] buf = TestUtils.getRandomBytes((int) writeSize);
-    long expectedUsedCapacity = logCapacity - segmentCapacity * segmentsLeft;
     int nextSegmentIdx = activeSegmentIdx + 1;
     LogSegment expectedActiveSegment = log.getSegment(segmentNames.get(activeSegmentIdx));
+    assertNotNull("Expected active segment is null", expectedActiveSegment);
+    assertEquals("Alignment not as expected", alignment, expectedActiveSegment.getAlignment());
     String activeSegName = expectedActiveSegment.getName();
     // add header space (if any) from the active segment.
-    long currentSegmentWriteSize = expectedActiveSegment.getEndOffset();
-    expectedUsedCapacity += currentSegmentWriteSize;
-    while (expectedUsedCapacity + writeSize <= logCapacity) {
-      Offset endOffsetOfLastMessage = new Offset(activeSegName, currentSegmentWriteSize);
+    long expectedEndOffsetOfWrite = expectedActiveSegment.getEndOffset();
+    while (writeSize <= expectedActiveSegment.getRemainingWritableCapacityInBytes() || segmentsLeft > 1) {
+      assertTrue("hasCapacity() should return true", log.hasCapacity(writeSize));
+      Offset endOffsetOfLastMessage = new Offset(activeSegName, expectedEndOffsetOfWrite);
       appender.append(log, ByteBuffer.wrap(buf));
-      FileSpan fileSpanOfMessage = log.getFileSpanForMessage(endOffsetOfLastMessage, writeSize);
-      FileSpan expectedFileSpanForMessage =
-          new FileSpan(endOffsetOfLastMessage, new Offset(activeSegName, currentSegmentWriteSize + writeSize));
-      currentSegmentWriteSize += writeSize;
-      expectedUsedCapacity += writeSize;
-      if (currentSegmentWriteSize > segmentCapacity) {
-        // calculate the end offset to ensure no partial writes.
-        currentSegmentWriteSize =
-            LogSegment.HEADER_SIZE + currentSegmentWriteSize - expectedActiveSegment.getEndOffset();
-        // add the "wasted" space to expectedUsedCapacity
-        expectedUsedCapacity += LogSegment.HEADER_SIZE + segmentCapacity - expectedActiveSegment.getEndOffset();
+      long expectedStartOffsetOfWrite = TestUtils.getAlignedOffset(expectedEndOffsetOfWrite, alignment);
+      expectedEndOffsetOfWrite = expectedStartOffsetOfWrite + writeSize;
+      if (expectedEndOffsetOfWrite > segmentCapacity) {
+        segmentsLeft--;
+        expectedStartOffsetOfWrite = TestUtils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), alignment);
+        expectedEndOffsetOfWrite =
+            TestUtils.getAlignedOffset(LogSegment.getCurrentVersionHeaderSize(), alignment) + writeSize;
         expectedActiveSegment = log.getSegment(segmentNames.get(nextSegmentIdx));
         assertNotNull("Next active segment is null", expectedActiveSegment);
+        assertEquals("Alignment not as expected", alignment, expectedActiveSegment.getAlignment());
         activeSegName = expectedActiveSegment.getName();
-        // currentSegmentWriteSize must be equal to LogSegment.HEADER_SIZE + writeSize
-        assertEquals("Unexpected size of new active segment", writeSize + LogSegment.HEADER_SIZE,
-            currentSegmentWriteSize);
-        expectedFileSpanForMessage = new FileSpan(new Offset(activeSegName, expectedActiveSegment.getStartOffset()),
-            new Offset(activeSegName, currentSegmentWriteSize));
         nextSegmentIdx++;
       }
-      assertEquals("StartOffset of message  not as expected", expectedFileSpanForMessage.getStartOffset(),
-          fileSpanOfMessage.getStartOffset());
-      assertEquals("EndOffset of message  not as expected", expectedFileSpanForMessage.getEndOffset(),
-          fileSpanOfMessage.getEndOffset());
-      assertEquals("Active segment end offset not as expected", currentSegmentWriteSize,
+      FileSpan expectedFileSpanForMessage = new FileSpan(new Offset(activeSegName, expectedStartOffsetOfWrite),
+          new Offset(activeSegName, expectedEndOffsetOfWrite));
+      FileSpan fileSpanOfMessage = log.getFileSpanForMessage(endOffsetOfLastMessage, writeSize);
+      assertEquals("FileSpan not as expected", expectedFileSpanForMessage, fileSpanOfMessage);
+      byte[] readBuf = readFileSpan(log, expectedFileSpanForMessage);
+      assertArrayEquals("Data read is not equal to data written", buf, readBuf);
+      assertEquals("Active segment end offset not as expected", expectedEndOffsetOfWrite,
           expectedActiveSegment.getEndOffset());
-      assertEquals("End offset not as expected", new Offset(expectedActiveSegment.getName(), currentSegmentWriteSize),
+      assertEquals("End offset not as expected", new Offset(expectedActiveSegment.getName(), expectedEndOffsetOfWrite),
           log.getEndOffset());
     }
+    assertFalse("hasCapacity() should return false", log.hasCapacity(writeSize));
     // try one more write that should fail
     try {
       appender.append(log, ByteBuffer.wrap(buf));
@@ -664,18 +800,19 @@ public class LogTest {
    * that the config is ignored.
    * @param originalLogCapacity the original total capacity of the log.
    * @param originalSegmentCapacity the original segment capacity of the log.
+   * @param originalAlignment the alignment to use.
    * @param allSegmentNames the expected names of the all the segments.
    * @throws IOException
    */
-  private void checkLogReload(long originalLogCapacity, long originalSegmentCapacity, List<String> allSegmentNames)
-      throws IOException {
+  private void checkLogReload(long originalLogCapacity, long originalSegmentCapacity, int originalAlignment,
+      List<String> allSegmentNames) throws IOException {
     // modify the segment capacity (mimics modifying the config)
     long[] newConfigs = {originalSegmentCapacity - 1, originalSegmentCapacity + 1};
     for (long newConfig : newConfigs) {
-      Log log = new Log(tempDir.getAbsolutePath(), originalLogCapacity, newConfig, metrics);
+      Log log = new Log(tempDir.getAbsolutePath(), originalLogCapacity, newConfig, originalAlignment, metrics);
       try {
         // the new config should be ignored.
-        checkLog(log, originalSegmentCapacity, allSegmentNames.size(), allSegmentNames);
+        checkLog(log, originalSegmentCapacity, allSegmentNames);
       } finally {
         log.close();
       }
@@ -696,6 +833,52 @@ public class LogTest {
     while (segment != null) {
       assertFalse("LogSegment has not been closed", segment.getView().getSecond().isOpen());
       segment = log.getNextSegment(segment);
+    }
+  }
+
+  // changingConfigsTest() helpers
+
+  /**
+   * Does the test of creating a {@link Log} with a certain set of configs that change when the log is reloaded.
+   * @param logCapacity the capacity of the log.
+   * @param initialSegmentCapacity the segment capacity to use on first load.
+   * @param changedSegmentCapacity the segment capacity to use on reload.
+   * @param initialAlignment the alignment to use on first load.
+   * @param changedAlignment the alignment to use on reload.
+   * @throws IOException
+   */
+  private void doChangingConfigsTest(long logCapacity, long initialSegmentCapacity, long changedSegmentCapacity,
+      int initialAlignment, int changedAlignment) throws IOException {
+    Log log = new Log(tempDir.getAbsolutePath(), logCapacity, initialSegmentCapacity, initialAlignment, metrics);
+    try {
+      assertEquals("Log capacity not as expected", logCapacity, log.getCapacityInBytes());
+      assertEquals("Segment capacity not as expected", initialSegmentCapacity, log.getSegmentCapacity());
+      writeToLogAndVerify(log.getFirstSegment(), log, initialAlignment, (int) (initialSegmentCapacity / 3));
+    } finally {
+      log.close();
+    }
+    log = new Log(tempDir.getAbsolutePath(), logCapacity, changedSegmentCapacity, changedAlignment, metrics);
+    try {
+      assertEquals("Log capacity not as expected", logCapacity, log.getCapacityInBytes());
+      assertEquals("Segment capacity not as expected", initialSegmentCapacity, log.getSegmentCapacity());
+      if (logCapacity <= initialSegmentCapacity) {
+        // single segment log - no effect from the change in segment capacity but changes to alignment immediately.
+        assertEquals("Segment capacity not as expected", initialSegmentCapacity, log.getSegmentCapacity());
+        writeToLogAndVerify(log.getFirstSegment(), log, changedAlignment, (int) (initialSegmentCapacity / 3));
+      } else {
+        // multiple segment log - no effect from the change in segment capacity and no change in alignment until the
+        // current log segment is full. New alignment takes effect in the next segment.
+        LogSegment segment = log.getFirstSegment();
+        writeToLogAndVerify(segment, log, initialAlignment, (int) segment.getRemainingWritableCapacityInBytes());
+        // write a byte to create new segment
+        CHANNEL_APPENDER.append(log, ByteBuffer.allocate(1));
+        segment = log.getNextSegment(segment);
+        assertEquals("Segment capacity not as expected", initialSegmentCapacity, segment.getCapacityInBytes());
+        // new alignment should have taken effect
+        writeToLogAndVerify(segment, log, changedAlignment, (int) (initialSegmentCapacity / 3));
+      }
+    } finally {
+      log.close();
     }
   }
 

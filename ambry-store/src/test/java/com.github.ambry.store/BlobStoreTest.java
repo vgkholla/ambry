@@ -843,7 +843,7 @@ public class BlobStoreTest {
       liveKeys.remove(addedId);
       delete(addedId);
       // 1 PUT entry that spans the rest of the data in the segment (upto a third of the segment size)
-      long size = sizeToWrite - (LogSegment.HEADER_SIZE + PUT_RECORD_SIZE + 3 * DELETE_RECORD_SIZE);
+      long size = sizeToWrite - (LogSegment.getCurrentVersionHeaderSize() + PUT_RECORD_SIZE + 3 * DELETE_RECORD_SIZE);
       addedId = put(1, size, Utils.Infinite_Time).get(0);
       idsByLogSegment.get(2).add(addedId);
       // the store counts the wasted space at the end of the second segment as "used capacity".
@@ -926,7 +926,7 @@ public class BlobStoreTest {
     // 1 PUT entry that spans the rest of the data in the segment
     idsInLogSegment.addAll(idsInIndexSegment);
 
-    long sizeWritten = isLogSegmented ? LogSegment.HEADER_SIZE : 0;
+    long sizeWritten = isLogSegmented ? LogSegment.getCurrentVersionHeaderSize() : 0;
     sizeWritten += idsInLogSegment.size() * PUT_RECORD_SIZE + deletedKeyCount * DELETE_RECORD_SIZE;
     MockId id = put(1, sizeToWrite - sizeWritten, Utils.Infinite_Time).get(0);
     idsInIndexSegment.add(id);

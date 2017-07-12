@@ -31,26 +31,26 @@ import java.util.concurrent.atomic.AtomicLong;
 
 
 /**
- * Represents a segment of a log. The segment is represented by its relative position in the log and the generation
- * number of the segment. Each segment knows the segment that "follows" it logically (if such a segment exists) and can
- * transparently redirect operations if required.
+ * Represents a segment of a log.
  */
 class LogSegment implements Read, Write {
-  private static final short VERSION = 0;
+  static final short VERSION_0 = 0;
+  static final short VERSION_1 = 1;
   private static final int VERSION_HEADER_SIZE = 2;
   private static final int CAPACITY_HEADER_SIZE = 8;
+  private static final int ALIGNMENT_HEADER_SIZE = 4;
   private static final int CRC_SIZE = 8;
-
-  static final int HEADER_SIZE = VERSION_HEADER_SIZE + CAPACITY_HEADER_SIZE + CRC_SIZE;
 
   private final FileChannel fileChannel;
   private final File file;
   private final long capacityInBytes;
+  private final int alignment;
   private final String name;
   private final Pair<File, FileChannel> segmentView;
   private final StoreMetrics metrics;
   private final long startOffset;
   private final AtomicLong endOffset;
+  private final ByteBuffer paddingBuffer;
   private final AtomicLong refCount = new AtomicLong(0);
   private final AtomicBoolean open = new AtomicBoolean(true);
 
@@ -60,11 +60,12 @@ class LogSegment implements Read, Write {
    *             different from the filename of the {@code file}.
    * @param file the backing {@link File} for this segment.
    * @param capacityInBytes the intended capacity of the segment
+   * @param alignment the alignment for the start offset of every new message written into the segment.
    * @param metrics the {@link StoreMetrics} instance to use.
    * @param writeHeader if {@code true}, headers are written that provide metadata about the segment.
    * @throws IOException if the file cannot be read or created
    */
-  LogSegment(String name, File file, long capacityInBytes, StoreMetrics metrics, boolean writeHeader)
+  LogSegment(String name, File file, long capacityInBytes, int alignment, StoreMetrics metrics, boolean writeHeader)
       throws IOException {
     if (!file.exists() || !file.isFile()) {
       throw new IllegalArgumentException(file.getAbsolutePath() + " does not exist or is not a file");
@@ -72,6 +73,7 @@ class LogSegment implements Read, Write {
     this.file = file;
     this.name = name;
     this.capacityInBytes = capacityInBytes;
+    this.alignment = alignment;
     this.metrics = metrics;
     fileChannel = Utils.openChannel(file, true);
     segmentView = new Pair<>(file, fileChannel);
@@ -79,9 +81,10 @@ class LogSegment implements Read, Write {
     endOffset = new AtomicLong(0);
     if (writeHeader) {
       // this will update end offset
-      writeHeader(capacityInBytes);
+      writeHeader();
     }
     startOffset = endOffset.get();
+    paddingBuffer = ByteBuffer.allocate(alignment - 1);
   }
 
   /**
@@ -100,18 +103,24 @@ class LogSegment implements Read, Write {
     // TODO: be able to handle this situation.
     CrcInputStream crcStream = new CrcInputStream(new FileInputStream(file));
     try (DataInputStream stream = new DataInputStream(crcStream)) {
-      switch (stream.readShort()) {
-        case 0:
+      short version = stream.readShort();
+      startOffset = getHeaderSize(version);
+      switch (version) {
+        case VERSION_0:
           capacityInBytes = stream.readLong();
-          long computedCrc = crcStream.getValue();
-          long crcFromFile = stream.readLong();
-          if (crcFromFile != computedCrc) {
-            throw new IllegalStateException("CRC from the segment file does not match computed CRC of header");
-          }
-          startOffset = HEADER_SIZE;
+          alignment = 1;
+          break;
+        case VERSION_1:
+          capacityInBytes = stream.readLong();
+          alignment = stream.readInt();
           break;
         default:
           throw new IllegalArgumentException("Unknown version in segment [" + file.getAbsolutePath() + "]");
+      }
+      long computedCrc = crcStream.getValue();
+      long crcFromFile = stream.readLong();
+      if (crcFromFile != computedCrc) {
+        throw new IllegalStateException("CRC from the segment file does not match computed CRC of header");
       }
     }
     this.file = file;
@@ -121,6 +130,7 @@ class LogSegment implements Read, Write {
     segmentView = new Pair<>(file, fileChannel);
     // externals will set the correct value of end offset.
     endOffset = new AtomicLong(startOffset);
+    paddingBuffer = ByteBuffer.allocate(alignment - 1);
   }
 
   /**
@@ -137,17 +147,17 @@ class LogSegment implements Read, Write {
    */
   @Override
   public int appendFrom(ByteBuffer buffer) throws IOException {
-    int bytesWritten = 0;
-    if (endOffset.get() + buffer.remaining() > capacityInBytes) {
+    int bytesWritten;
+    long nextWriteStartOffset = Utils.getAlignedOffset(endOffset.get(), alignment);
+    if (nextWriteStartOffset + buffer.remaining() > capacityInBytes) {
       metrics.overflowWriteError.inc();
       throw new IllegalArgumentException(
           "Buffer cannot be written to segment [" + file.getAbsolutePath() + "] because " + "it exceeds the capacity ["
               + capacityInBytes + "]");
     } else {
-      while (buffer.hasRemaining()) {
-        bytesWritten += fileChannel.write(buffer, endOffset.get());
-      }
-      endOffset.addAndGet(bytesWritten);
+      padIfRequired(nextWriteStartOffset);
+      bytesWritten = writeBuffer(buffer, nextWriteStartOffset);
+      endOffset.set(nextWriteStartOffset + bytesWritten);
     }
     return bytesWritten;
   }
@@ -166,17 +176,19 @@ class LogSegment implements Read, Write {
    */
   @Override
   public void appendFrom(ReadableByteChannel channel, long size) throws IOException {
-    if (endOffset.get() + size > capacityInBytes) {
+    long nextWriteStartOffset = Utils.getAlignedOffset(endOffset.get(), alignment);
+    if (nextWriteStartOffset + size > capacityInBytes) {
       metrics.overflowWriteError.inc();
       throw new IllegalArgumentException(
           "Channel cannot be written to segment [" + file.getAbsolutePath() + "] because" + " it exceeds the capacity ["
               + capacityInBytes + "]");
     } else {
+      padIfRequired(nextWriteStartOffset);
       long bytesWritten = 0;
       while (bytesWritten < size) {
-        bytesWritten += fileChannel.transferFrom(channel, endOffset.get() + bytesWritten, size - bytesWritten);
+        bytesWritten += fileChannel.transferFrom(channel, nextWriteStartOffset + bytesWritten, size - bytesWritten);
       }
-      endOffset.addAndGet(bytesWritten);
+      endOffset.set(nextWriteStartOffset + bytesWritten);
     }
   }
 
@@ -324,11 +336,25 @@ class LogSegment implements Read, Write {
   }
 
   /**
+   * @return the alignment being used in the segment.
+   */
+  int getAlignment() {
+    return alignment;
+  }
+
+  /**
    * Flushes the backing file to disk.
    * @throws IOException if there is an I/O error while flushing.
    */
   void flush() throws IOException {
     fileChannel.force(true);
+  }
+
+  /**
+   * @return the amount of capacity left over for writes. Accounts for the alignment of the next write.
+   */
+  long getRemainingWritableCapacityInBytes() {
+    return capacityInBytes - Utils.getAlignedOffset(endOffset.get(), alignment);
   }
 
   /**
@@ -343,23 +369,80 @@ class LogSegment implements Read, Write {
 
   /**
    * Writes a header describing the segment.
-   * @param capacityInBytes the intended capacity of the segment.
    * @throws IOException if there is any I/O error writing to the file.
    */
-  private void writeHeader(long capacityInBytes) throws IOException {
+  private void writeHeader() throws IOException {
+    int headerSize = getCurrentVersionHeaderSize();
     Crc32 crc = new Crc32();
-    ByteBuffer buffer = ByteBuffer.allocate(HEADER_SIZE);
-    buffer.putShort(VERSION);
+    ByteBuffer buffer = ByteBuffer.allocate(headerSize);
+    buffer.putShort(VERSION_1);
     buffer.putLong(capacityInBytes);
-    crc.update(buffer.array(), 0, HEADER_SIZE - CRC_SIZE);
+    buffer.putInt(alignment);
+    crc.update(buffer.array(), 0, headerSize - CRC_SIZE);
     buffer.putLong(crc.getValue());
     buffer.flip();
     appendFrom(Channels.newChannel(new ByteBufferInputStream(buffer)), buffer.remaining());
+  }
+
+  /**
+   * Pads all bytes b/w {@code nextWriteStartOffset} and {@link #endOffset} with 0s.
+   * @param nextWriteStartOffset the offset at which the next write will take place.
+   * @throws IOException
+   */
+  private void padIfRequired(long nextWriteStartOffset) throws IOException {
+    int padCount = (int) (nextWriteStartOffset - endOffset.get());
+    if (padCount > 0) {
+      ByteBuffer padding = paddingBuffer.duplicate();
+      padding.limit(padCount);
+      writeBuffer(padding, endOffset.get());
+    }
+  }
+
+  /**
+   * Writes {@code buffer} into {@link #fileChannel} at {@code writeOffset}.
+   * @param buffer the bytes to write.
+   * @param writeOffset the offset in the {@link #fileChannel} to write at.
+   * @return the number of bytes written.
+   * @throws IOException
+   */
+  private int writeBuffer(ByteBuffer buffer, long writeOffset) throws IOException {
+    int bytesWritten = 0;
+    while (buffer.hasRemaining()) {
+      bytesWritten += fileChannel.write(buffer, writeOffset + bytesWritten);
+    }
+    return bytesWritten;
   }
 
   @Override
   public String toString() {
     return "(File: [" + file + " ], Capacity: [" + capacityInBytes + "], Start offset: [" + startOffset
         + "], End offset: [" + endOffset + "])";
+  }
+
+  /**
+   * @return the size of header for the current version of {@link LogSegment} i.e. any new segments created will have
+   * a header of this size but the headers of existing log segments can be a different size.
+   */
+  static int getCurrentVersionHeaderSize() {
+    return getHeaderSize(VERSION_1);
+  }
+
+  /**
+   * @param version the version of the header whose size is required.
+   * @return the size of the header at the given {@code version}.
+   */
+  static int getHeaderSize(short version) {
+    int headerSize = VERSION_HEADER_SIZE + CRC_SIZE;
+    switch (version) {
+      case VERSION_0:
+        headerSize += CAPACITY_HEADER_SIZE;
+        break;
+      case VERSION_1:
+        headerSize += CAPACITY_HEADER_SIZE + ALIGNMENT_HEADER_SIZE;
+        break;
+      default:
+        throw new IllegalArgumentException("Unrecognized log segment version: " + version);
+    }
+    return headerSize;
   }
 }

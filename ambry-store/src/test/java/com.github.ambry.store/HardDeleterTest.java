@@ -149,7 +149,7 @@ public class HardDeleterTest {
       c.delete();
     }
     scheduler = Utils.newScheduler(1, false);
-    log = new Log(rootDirectory.getAbsolutePath(), 10000, 10000,
+    log = new Log(rootDirectory.getAbsolutePath(), 10000, 10000, 4,
         new StoreMetrics(rootDirectory.getAbsolutePath(), new MetricRegistry()));
     Properties props = new Properties();
     // the test will set the tokens, so disable the index persistor.

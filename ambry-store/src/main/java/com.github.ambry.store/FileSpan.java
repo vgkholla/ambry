@@ -52,4 +52,24 @@ class FileSpan {
   public String toString() {
     return "StartOffset=[" + startOffset + "], EndOffset=[" + endOffset + "]";
   }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+
+    FileSpan fileSpan = (FileSpan) o;
+    return startOffset.equals(fileSpan.startOffset) && endOffset.equals(fileSpan.endOffset);
+  }
+
+  @Override
+  public int hashCode() {
+    int result = startOffset.hashCode();
+    result = 31 * result + endOffset.hashCode();
+    return result;
+  }
 }

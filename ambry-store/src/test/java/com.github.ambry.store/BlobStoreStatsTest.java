@@ -56,6 +56,7 @@ public class BlobStoreStatsTest {
   private static final long QUEUE_PROCESSOR_PERIOD_IN_Ms = 100;
   private static final StoreMetrics METRICS = new StoreMetrics("test", new MetricRegistry());
   private static final long DEFAULT_WAIT_TIMEOUT_SECS = Time.SecsPerMin;
+  private static final int ALIGNMENT = 7;
   private final Map<String, Throttler> throttlers = new HashMap<>();
   private final DiskIOScheduler diskIOScheduler = new DiskIOScheduler(throttlers);
   private final ScheduledExecutorService indexScannerScheduler = Utils.newScheduler(1, true);
@@ -72,7 +73,7 @@ public class BlobStoreStatsTest {
   public BlobStoreStatsTest(boolean isLogSegmented, boolean isBucketingEnabled)
       throws InterruptedException, IOException, StoreException {
     tempDir = StoreTestUtils.createTempDirectory("blobStoreStatsDir-" + UtilsTest.getRandomString(10));
-    state = new CuratedLogIndexState(isLogSegmented, tempDir);
+    state = new CuratedLogIndexState(isLogSegmented, tempDir, ALIGNMENT);
     bucketingEnabled = isBucketingEnabled;
     this.isLogSegmented = isLogSegmented;
   }
@@ -597,7 +598,7 @@ public class BlobStoreStatsTest {
     state.destroy();
     assertTrue(tempDir.getAbsolutePath() + " could not be deleted", StoreTestUtils.cleanDirectory(tempDir, true));
     tempDir = StoreTestUtils.createTempDirectory("blobStoreStatsDir-" + UtilsTest.getRandomString(10));
-    state = new CuratedLogIndexState(isLogSegmented, tempDir, false, false);
+    state = new CuratedLogIndexState(isLogSegmented, tempDir, false, false, ALIGNMENT);
     int bucketCount = bucketingEnabled ? 1 : 0;
     BlobStoreStats blobStoreStats = setupBlobStoreStats(bucketCount, 0);
     verifyAndGetContainerValidSize(blobStoreStats, state.time.milliseconds());
@@ -616,7 +617,7 @@ public class BlobStoreStatsTest {
     state.destroy();
     assertTrue(tempDir.getAbsolutePath() + " could not be deleted", StoreTestUtils.cleanDirectory(tempDir, true));
     tempDir = StoreTestUtils.createTempDirectory("blobStoreStatsDir-" + UtilsTest.getRandomString(10));
-    state = new CuratedLogIndexState(isLogSegmented, tempDir, false, false);
+    state = new CuratedLogIndexState(isLogSegmented, tempDir, false, false, ALIGNMENT);
     MockThrottler mockThrottler = new MockThrottler(new CountDownLatch(0), new CountDownLatch(0));
     throttlers.put(BlobStoreStats.IO_SCHEDULER_JOB_TYPE, mockThrottler);
     int bucketCount = 50;

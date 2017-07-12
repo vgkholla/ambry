@@ -63,6 +63,7 @@ import static org.junit.Assert.*;
 public class IndexTest {
 
   private final boolean isLogSegmented;
+  private final int alignment;
   private final File tempDir;
   private final CuratedLogIndexState state;
 
@@ -74,17 +75,20 @@ public class IndexTest {
    */
   @Parameterized.Parameters
   public static List<Object[]> data() {
-    return Arrays.asList(new Object[][]{{false}, {true}});
+    return Arrays.asList(new Object[][]{{false, 1}, {false, 7}, {true, 1}, {true, 7}});
   }
 
   /**
    * Creates a temporary directory and sets up some test state.
+   * @param isLogSegmented {@code true} if log needs to be segmented. {@code false} otherwise.
+   * @param alignment the alignment for the log.
    * @throws IOException
    */
-  public IndexTest(boolean isLogSegmented) throws InterruptedException, IOException, StoreException {
+  public IndexTest(boolean isLogSegmented, int alignment) throws InterruptedException, IOException, StoreException {
     this.isLogSegmented = isLogSegmented;
+    this.alignment = alignment;
     tempDir = StoreTestUtils.createTempDirectory("indexDir-" + UtilsTest.getRandomString(10));
-    state = new CuratedLogIndexState(isLogSegmented, tempDir);
+    state = new CuratedLogIndexState(isLogSegmented, tempDir, alignment);
   }
 
   /**
@@ -440,8 +444,9 @@ public class IndexTest {
     LogSegment activeSegment = state.log.getSegment(state.index.getCurrentEndOffset().getName());
     long offsetBeforeAppend = activeSegment.getEndOffset();
     state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
-    assertEquals("End offset of active segment did not change",
-        offsetBeforeAppend + CuratedLogIndexState.PUT_RECORD_SIZE, activeSegment.getEndOffset());
+    long expectedEndOffset =
+        TestUtils.getAlignedOffset(offsetBeforeAppend, alignment) + CuratedLogIndexState.PUT_RECORD_SIZE;
+    assertEquals("End offset of active segment did not change", expectedEndOffset, activeSegment.getEndOffset());
     state.reloadIndex(true, false);
     assertEquals("End offset of active segment should have been reset", offsetBeforeAppend,
         activeSegment.getEndOffset());
@@ -457,15 +462,16 @@ public class IndexTest {
       activeSegment = state.log.getSegment(state.index.getCurrentEndOffset().getName());
       offsetBeforeAppend = activeSegment.getEndOffset();
       // fill up this segment
-      state.appendToLog(activeSegment.getCapacityInBytes() - activeSegment.getEndOffset());
+      state.appendToLog(activeSegment.getRemainingWritableCapacityInBytes());
       assertEquals("End offset of active segment did not change", activeSegment.getCapacityInBytes(),
           activeSegment.getEndOffset());
       // write a little more so that a new segment is created
       state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
       LogSegment nextActiveSegment = state.log.getNextSegment(activeSegment);
       assertNotNull("New segment has not been created", nextActiveSegment);
-      assertEquals("Unexpected end offset for new segment", CuratedLogIndexState.PUT_RECORD_SIZE,
-          nextActiveSegment.getEndOffset() - nextActiveSegment.getStartOffset());
+      expectedEndOffset = TestUtils.getAlignedOffset(nextActiveSegment.getStartOffset(), alignment)
+          + CuratedLogIndexState.PUT_RECORD_SIZE;
+      assertEquals("Unexpected end offset for new segment", expectedEndOffset, nextActiveSegment.getEndOffset());
       state.reloadIndex(true, false);
       // there should no longer be a "next" segment to the old active segment
       assertNull("There should have been no more segments", state.log.getNextSegment(activeSegment));
@@ -560,7 +566,10 @@ public class IndexTest {
     // make sure rollover occurs on every index entry
     state.properties.put("store.index.max.number.of.inmem.elements", "1");
     state.reloadIndex(true, false);
-    state.appendToLog(ITERATIONS);
+    // append enough data so that the log doesn't throw
+    for (int i = 0; i < ITERATIONS; i++) {
+      state.appendToLog(1);
+    }
 
     final Set<IndexEntry> entriesAdded = Collections.newSetFromMap(new ConcurrentHashMap<IndexEntry, Boolean>());
     Runnable adder = new Runnable() {
@@ -721,7 +730,9 @@ public class IndexTest {
   @Test
   public void findEntriesSinceOnRestartTest() throws IOException, StoreException {
     Offset lastRecordOffset = state.index.journal.getLastOffset();
-    state.appendToLog(2 * CuratedLogIndexState.PUT_RECORD_SIZE);
+    // insert two put records into the log. Has to be made in discrete steps to allow for alignment.
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     // this record will be recovered.
     FileSpan firstRecordFileSpan =
         state.log.getFileSpanForMessage(state.index.getCurrentEndOffset(), CuratedLogIndexState.PUT_RECORD_SIZE);
@@ -740,13 +751,8 @@ public class IndexTest {
     state.allKeys.put(newId, new Pair<IndexValue, IndexValue>(
         new IndexValue(CuratedLogIndexState.PUT_RECORD_SIZE, firstRecordFileSpan.getStartOffset(), Utils.Infinite_Time),
         null));
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        return Collections.singletonList(new MessageInfo(newId, CuratedLogIndexState.PUT_RECORD_SIZE));
-      }
-    };
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> Collections.singletonList(
+        new MessageInfo(newId, CuratedLogIndexState.PUT_RECORD_SIZE));
     state.reloadIndex(true, true);
 
     // If there is no incarnationId in the incoming token, for backwards compatibility purposes we consider it as valid
@@ -907,7 +913,9 @@ public class IndexTest {
   @Test
   public void findEntriesSinceIncarnationIdTest() throws IOException, StoreException {
     Offset lastRecordOffset = state.index.journal.getLastOffset();
-    state.appendToLog(2 * CuratedLogIndexState.PUT_RECORD_SIZE);
+    // insert two put records into the log. Has to be made in discrete steps to allow for alignment.
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     // will be recovered
     FileSpan firstRecordFileSpan =
         state.log.getFileSpanForMessage(state.index.getCurrentEndOffset(), CuratedLogIndexState.PUT_RECORD_SIZE);
@@ -922,13 +930,8 @@ public class IndexTest {
     state.allKeys.put(newId, new Pair<IndexValue, IndexValue>(
         new IndexValue(CuratedLogIndexState.PUT_RECORD_SIZE, firstRecordFileSpan.getStartOffset(), Utils.Infinite_Time),
         null));
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        return Collections.singletonList(new MessageInfo(newId, CuratedLogIndexState.PUT_RECORD_SIZE));
-      }
-    };
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> Collections.singletonList(
+        new MessageInfo(newId, CuratedLogIndexState.PUT_RECORD_SIZE));
     // change in incarnationId
     state.incarnationId = UUID.randomUUID();
     state.reloadIndex(true, true);
@@ -1013,8 +1016,9 @@ public class IndexTest {
     MockId id = state.logOrder.lastEntry().getValue().getFirst();
     state.index.persistIndex();
     state.reloadIndex(false, false);
-    assertEquals("Index End offset mismatch ",
-        new Offset(indexEndOffset.getName(), indexEndOffset.getOffset() + CuratedLogIndexState.PUT_RECORD_SIZE),
+    long expectedEndOffset =
+        TestUtils.getAlignedOffset(indexEndOffset.getOffset(), alignment) + CuratedLogIndexState.PUT_RECORD_SIZE;
+    assertEquals("Index End offset mismatch ", new Offset(indexEndOffset.getName(), expectedEndOffset),
         state.index.getCurrentEndOffset());
     verifyValue(id, state.index.findKey(id));
 
@@ -1390,12 +1394,20 @@ public class IndexTest {
       throws InterruptedException, StoreException, IOException {
     if (newLogSegment) {
       // to ensure a new log segment is created. If not, find the remaining size below will fail
-      state.addPutEntries(1, PUT_RECORD_SIZE, Utils.Infinite_Time);
+      LogSegment segment = state.log.getSegment(state.index.getCurrentEndOffset().getName());
+      state.addPutEntries(1, segment.getRemainingWritableCapacityInBytes() + 1, Utils.Infinite_Time);
       numberOfEntries--;
     }
     // add PUT entries that spans the rest of the data in the last segment
-    long remainingSize = state.log.getSegmentCapacity() - state.index.getCurrentEndOffset().getOffset();
+    LogSegment segment = state.log.getSegment(state.index.getCurrentEndOffset().getName());
+    long remainingSize = segment.getRemainingWritableCapacityInBytes();
+    if (remainingSize / numberOfEntries < alignment) {
+      throw new IllegalArgumentException("Size of each put record is less than the alignment. This cannot be achieved");
+    }
+    // calculate the size of each put record
     long sizePerPutRecord = remainingSize / numberOfEntries;
+    // "align" it to make sure we don't overflow
+    sizePerPutRecord = sizePerPutRecord - (sizePerPutRecord % alignment);
     for (int i = 0; i < numberOfEntries; i++) {
       state.addPutEntries(1, sizePerPutRecord, Utils.Infinite_Time);
     }
@@ -1415,23 +1427,20 @@ public class IndexTest {
     // recover a few messages in a single segment
     final List<MessageInfo> infos = getCuratedSingleSegmentRecoveryInfos(idToCreateAndDelete);
     final AtomicInteger returnTracker = new AtomicInteger(0);
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        switch (returnTracker.getAndIncrement()) {
-          case 0:
-            return infos;
-          default:
-            throw new IllegalStateException("This function should not have been called more than once");
-        }
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> {
+      switch (returnTracker.getAndIncrement()) {
+        case 0:
+          return infos;
+        default:
+          throw new IllegalStateException("This function should not have been called more than once");
       }
     };
     // This test relies on log segment not spilling over. If that happens, this test will fail.
     LogSegment activeSegment = state.log.getSegment(indexEndOffsetBeforeRecovery.getName());
     long expectedSegmentEndOffset = activeSegment.getEndOffset();
     // write a little "extra" data
-    state.appendToLog(2 * CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
 
     state.reloadIndex(true, false);
     assertEquals("End offset not as expected", expectedSegmentEndOffset, activeSegment.getEndOffset());
@@ -1466,24 +1475,21 @@ public class IndexTest {
     nextSegmentInfos.add(
         new MessageInfo(idToCreateAndDeleteAcrossSegments, CuratedLogIndexState.DELETE_RECORD_SIZE, true));
     final AtomicInteger returnTracker = new AtomicInteger(0);
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        switch (returnTracker.getAndIncrement()) {
-          case 0:
-            return activeSegmentInfos;
-          case 1:
-            return nextSegmentInfos;
-          default:
-            throw new IllegalStateException("This function should not have been called more than two times");
-        }
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> {
+      switch (returnTracker.getAndIncrement()) {
+        case 0:
+          return activeSegmentInfos;
+        case 1:
+          return nextSegmentInfos;
+        default:
+          throw new IllegalStateException("This function should not have been called more than two times");
       }
     };
     long activeSegmentExpectedEndOffset = activeSegment.getEndOffset();
     long nextSegmentExpectedEndOffset = state.log.getNextSegment(activeSegment).getEndOffset();
     // write a little "extra" data
-    state.appendToLog(2 * CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
 
     state.reloadIndex(true, false);
     assertEquals("End offset of former active segment not as expected", activeSegmentExpectedEndOffset,
@@ -1506,19 +1512,25 @@ public class IndexTest {
    */
   private List<MessageInfo> getCuratedSingleSegmentRecoveryInfos(MockId idToCreateAndDelete) throws IOException {
     List<MessageInfo> infos = new ArrayList<>();
-    state.appendToLog(3 * CuratedLogIndexState.DELETE_RECORD_SIZE + 4 * CuratedLogIndexState.PUT_RECORD_SIZE);
     // 1 DELETE for a PUT not in the infos
+    state.appendToLog(CuratedLogIndexState.DELETE_RECORD_SIZE);
     infos.add(new MessageInfo(state.getIdToDeleteFromLogSegment(state.log.getFirstSegment()),
         CuratedLogIndexState.DELETE_RECORD_SIZE, true));
     // 3 PUT
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     infos.add(new MessageInfo(idToCreateAndDelete, CuratedLogIndexState.PUT_RECORD_SIZE));
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     infos.add(new MessageInfo(state.getUniqueId(), CuratedLogIndexState.PUT_RECORD_SIZE));
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     infos.add(new MessageInfo(state.getUniqueId(), CuratedLogIndexState.PUT_RECORD_SIZE));
     // 1 DELETE for a PUT in the infos
+    state.appendToLog(CuratedLogIndexState.DELETE_RECORD_SIZE);
     infos.add(new MessageInfo(idToCreateAndDelete, CuratedLogIndexState.DELETE_RECORD_SIZE, true));
     // 1 expired PUT
+    state.appendToLog(CuratedLogIndexState.PUT_RECORD_SIZE);
     infos.add(new MessageInfo(state.getUniqueId(), CuratedLogIndexState.PUT_RECORD_SIZE, 0));
     // 1 delete for PUT that does not exist in the index
+    state.appendToLog(CuratedLogIndexState.DELETE_RECORD_SIZE);
     infos.add(new MessageInfo(state.getUniqueId(), CuratedLogIndexState.DELETE_RECORD_SIZE, true));
     return infos;
   }
@@ -1537,7 +1549,7 @@ public class IndexTest {
       FileSpan expectedFileSpan = state.log.getFileSpanForMessage(currCheckOffset, info.getSize());
       if (!info.getStoreKey().equals(putRecordIdToIgnore) || info.isDeleted()) {
         IndexValue value = state.index.findKey(info.getStoreKey());
-        assertEquals("Incorrect value for start offset", currCheckOffset, value.getOffset());
+        assertEquals("Incorrect value for start offset", expectedFileSpan.getStartOffset(), value.getOffset());
         assertEquals("Inconsistent size", info.getSize(), value.getSize());
         assertEquals("Inconsistent delete state ", info.isDeleted(), value.isFlagSet(IndexValue.Flags.Delete_Index));
         assertEquals("Inconsistent expiresAtMs", info.getExpirationTimeInMs(), value.getExpiresAtMs());
@@ -1553,25 +1565,21 @@ public class IndexTest {
   private void totalIndexLossRecoveryTest() throws StoreException {
     state.closeAndClearIndex();
     final AtomicInteger returnTracker = new AtomicInteger(0);
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        switch (returnTracker.getAndIncrement()) {
-          case 0:
-            return Collections.singletonList(
-                new MessageInfo(state.getUniqueId(), CuratedLogIndexState.PUT_RECORD_SIZE));
-          default:
-            return Collections.emptyList();
-        }
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> {
+      switch (returnTracker.getAndIncrement()) {
+        case 0:
+          return Collections.singletonList(new MessageInfo(state.getUniqueId(), CuratedLogIndexState.PUT_RECORD_SIZE));
+        default:
+          return Collections.emptyList();
       }
     };
     state.reloadIndex(true, false);
     assertEquals("Incorrect log segment count", 1, state.index.getLogSegmentCount());
     assertEquals("Index should contain exactly one index segment", 1, state.index.getIndexSegments().size());
     LogSegment segment = state.log.getFirstSegment();
-    assertEquals("End offset not as expected",
-        new Offset(segment.getName(), segment.getStartOffset() + CuratedLogIndexState.PUT_RECORD_SIZE),
+    long expectedEndOffset =
+        TestUtils.getAlignedOffset(segment.getStartOffset(), alignment) + CuratedLogIndexState.PUT_RECORD_SIZE;
+    assertEquals("End offset not as expected", new Offset(segment.getName(), expectedEndOffset),
         state.index.getCurrentEndOffset());
   }
 
@@ -1583,13 +1591,7 @@ public class IndexTest {
    * @param expectedErrorCode the {@link StoreErrorCodes} expected for the failure.
    */
   private void doRecoveryFailureTest(final MessageInfo info, StoreErrorCodes expectedErrorCode) {
-    state.recovery = new MessageStoreRecovery() {
-      @Override
-      public List<MessageInfo> recover(Read read, long startOffset, long endOffset, StoreKeyFactory factory)
-          throws IOException {
-        return Collections.singletonList(info);
-      }
-    };
+    state.recovery = (read, startOffset, endOffset, alignment, factory) -> Collections.singletonList(info);
     try {
       state.reloadIndex(true, false);
       fail("Loading index should have failed because recovery contains invalid info");
@@ -2213,7 +2215,7 @@ public class IndexTest {
           addPutEntries(currentEndOffset, null, 1, CuratedLogIndexState.PUT_RECORD_SIZE, Utils.Infinite_Time));
     } else {
       IndexEntry entryToDelete = indexEntries.get(TestUtils.RANDOM.nextInt(indexEntries.size()));
-      state.appendToLog(state.DELETE_RECORD_SIZE);
+      state.appendToLog(CuratedLogIndexState.DELETE_RECORD_SIZE);
       fileSpan = state.log.getFileSpanForMessage(currentEndOffset, CuratedLogIndexState.DELETE_RECORD_SIZE);
       state.index.markAsDeleted(entryToDelete.getKey(), fileSpan);
       // remove entryToDelete from indexEntries as it will be part of latest index segment
