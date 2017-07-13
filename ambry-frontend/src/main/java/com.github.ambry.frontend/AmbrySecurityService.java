@@ -17,6 +17,7 @@ import com.github.ambry.config.FrontendConfig;
 import com.github.ambry.messageformat.BlobInfo;
 import com.github.ambry.messageformat.BlobProperties;
 import com.github.ambry.protocol.GetOption;
+import com.github.ambry.rest.NettyClient;
 import com.github.ambry.rest.ResponseStatus;
 import com.github.ambry.rest.RestMethod;
 import com.github.ambry.rest.RestRequest;
@@ -31,9 +32,20 @@ import com.github.ambry.router.GetBlobOptions;
 import com.github.ambry.utils.Pair;
 import com.github.ambry.utils.Time;
 import com.github.ambry.utils.Utils;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpVersion;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.concurrent.Future;
+import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -41,10 +53,13 @@ import java.util.concurrent.Future;
  * sets the respective headers on response.
  */
 class AmbrySecurityService implements SecurityService {
+  private static final String INDEXER_HOST = "localhost";
+  private static final int INDEXER_PORT = 8080;
 
   private boolean isOpen;
   private final FrontendConfig frontendConfig;
   private final FrontendMetrics frontendMetrics;
+  private final Logger logger = LoggerFactory.getLogger(AmbryBlobStorageService.class);
 
   public AmbrySecurityService(FrontendConfig frontendConfig, FrontendMetrics frontendMetrics) {
     this.frontendConfig = frontendConfig;
@@ -144,6 +159,7 @@ class AmbrySecurityService implements SecurityService {
             responseChannel.setHeader(RestUtils.Headers.CONTENT_LENGTH, 0);
             responseChannel.setHeader(RestUtils.Headers.CREATION_TIME,
                 new Date(blobInfo.getBlobProperties().getCreationTimeInMs()));
+            triggerIndexing(responseChannel);
             break;
           default:
             exception = new RestServiceException("Cannot process response for request with method " + restMethod,
@@ -164,6 +180,24 @@ class AmbrySecurityService implements SecurityService {
   @Override
   public void close() {
     isOpen = false;
+  }
+
+  private void triggerIndexing(RestResponseChannel responseChannel) {
+    try {
+      JSONObject json = new JSONObject();
+      json.put("requestVersion", 1);
+      json.put("blobId", responseChannel.getHeader(RestUtils.Headers.LOCATION));
+      ByteBuf content = Unpooled.wrappedBuffer(json.toString().getBytes());
+      HttpRequest httpRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/", content);
+      httpRequest.headers().add(RestUtils.Headers.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON);
+      httpRequest.headers().add(RestUtils.Headers.CONTENT_LENGTH, content.readableBytes());
+      httpRequest.headers().add(HttpHeaderNames.HOST, "localhost.localdomain");
+      NettyClient nettyClient = new NettyClient(INDEXER_HOST, INDEXER_PORT, null);
+      nettyClient.sendRequest(httpRequest, null, null).get();
+      nettyClient.close();
+    } catch (Exception e) {
+      logger.error("Error while triggering indexing request", e);
+    }
   }
 
   /**
