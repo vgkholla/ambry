@@ -26,6 +26,7 @@ import com.github.ambry.notification.NotificationSystem;
 import com.github.ambry.protocol.PutRequest;
 import com.github.ambry.protocol.PutResponse;
 import com.github.ambry.protocol.RequestOrResponse;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.ByteBufferInputStream;
 import com.github.ambry.utils.Time;
 import com.github.ambry.utils.Utils;
@@ -217,14 +218,14 @@ class PutManager {
     if (networkClientErrorCode == null) {
       try {
         putResponse = PutResponse.readFrom(new DataInputStream(new ByteBufferInputStream(responseInfo.getResponse())));
-        responseHandler.onEvent(replicaId, putResponse.getError());
+        responseHandler.onEvent(replicaId, putResponse.getError(), RequestOrResponseType.PutRequest);
       } catch (Exception e) {
         // Ignore. There is no value in notifying the response handler.
         logger.error("Response deserialization received unexpected error", e);
         routerMetrics.responseDeserializationErrorCount.inc();
       }
     } else {
-      responseHandler.onEvent(replicaId, networkClientErrorCode);
+      responseHandler.onEvent(replicaId, networkClientErrorCode, RequestOrResponseType.PutRequest);
     }
     return putResponse;
   }

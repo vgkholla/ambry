@@ -14,6 +14,7 @@
 package com.github.ambry.clustermap;
 
 import com.codahale.metrics.MetricRegistry;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
@@ -90,7 +91,7 @@ public interface ClusterMap extends AutoCloseable {
   /**
    * Performs the required action for a replica related event.
    */
-  void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event);
+  void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType);
 
   /**
    * Close the cluster map. Any cleanups should be done in this call.

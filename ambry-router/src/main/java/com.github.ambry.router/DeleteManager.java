@@ -25,6 +25,7 @@ import com.github.ambry.notification.NotificationSystem;
 import com.github.ambry.protocol.DeleteRequest;
 import com.github.ambry.protocol.DeleteResponse;
 import com.github.ambry.protocol.RequestOrResponse;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.ByteBufferInputStream;
 import com.github.ambry.utils.Time;
 import java.io.DataInputStream;
@@ -189,14 +190,14 @@ class DeleteManager {
       try {
         deleteResponse =
             DeleteResponse.readFrom(new DataInputStream(new ByteBufferInputStream(responseInfo.getResponse())));
-        responseHandler.onEvent(replicaId, deleteResponse.getError());
+        responseHandler.onEvent(replicaId, deleteResponse.getError(), RequestOrResponseType.DeleteRequest);
       } catch (Exception e) {
         // Ignore. There is no value in notifying the response handler.
         logger.error("Response deserialization received unexpected error", e);
         routerMetrics.responseDeserializationErrorCount.inc();
       }
     } else {
-      responseHandler.onEvent(replicaId, networkClientErrorCode);
+      responseHandler.onEvent(replicaId, networkClientErrorCode, RequestOrResponseType.DeleteRequest);
     }
     return deleteResponse;
   }

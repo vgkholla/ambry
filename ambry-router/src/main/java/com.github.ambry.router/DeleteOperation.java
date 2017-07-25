@@ -22,6 +22,7 @@ import com.github.ambry.network.Port;
 import com.github.ambry.network.ResponseInfo;
 import com.github.ambry.protocol.DeleteRequest;
 import com.github.ambry.protocol.DeleteResponse;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.Time;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -92,8 +93,9 @@ class DeleteOperation {
     this.callback = callback;
     this.time = time;
     this.deleteRequestInfos = new HashMap<Integer, DeleteRequestInfo>();
-    this.operationTracker = new SimpleOperationTracker(routerConfig.routerDatacenterName, blobId.getPartition(), true,
-        routerConfig.routerDeleteSuccessTarget, routerConfig.routerDeleteRequestParallelism, false);
+    this.operationTracker = new SimpleOperationTracker(routerConfig.routerDatacenterName, blobId.getPartition(),
+        RequestOrResponseType.DeleteRequest, true, routerConfig.routerDeleteSuccessTarget,
+        routerConfig.routerDeleteRequestParallelism, false);
   }
 
   /**

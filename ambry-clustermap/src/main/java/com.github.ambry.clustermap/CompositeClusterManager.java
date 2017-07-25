@@ -14,6 +14,7 @@
 package com.github.ambry.clustermap;
 
 import com.codahale.metrics.MetricRegistry;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
@@ -207,15 +208,16 @@ class CompositeClusterManager implements ClusterMap {
    * Relay the event to both the underlying {@link StaticClusterManager} and the underlying {@link HelixClusterManager}.
    * @param replicaId the {@link ReplicaId} for which this event has occurred.
    * @param event the {@link ReplicaEventType}.
+   * @param requestType the type of the request associated with the event if any.
    */
   @Override
-  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
-    staticClusterManager.onReplicaEvent(replicaId, event);
+  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
+    staticClusterManager.onReplicaEvent(replicaId, event, requestType);
     if (helixClusterManager != null) {
       AmbryReplica ambryReplica =
           helixClusterManager.getReplicaForPartitionOnNode(replicaId.getDataNodeId().getHostname(),
               replicaId.getDataNodeId().getPort(), replicaId.getPartitionId().toString());
-      helixClusterManager.onReplicaEvent(ambryReplica, event);
+      helixClusterManager.onReplicaEvent(ambryReplica, event, requestType);
     }
   }
 

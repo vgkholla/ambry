@@ -32,6 +32,7 @@ import com.github.ambry.notification.NotificationSystem;
 import com.github.ambry.protocol.PutRequest;
 import com.github.ambry.protocol.PutResponse;
 import com.github.ambry.protocol.RequestOrResponse;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.store.StoreKey;
 import com.github.ambry.utils.Pair;
 import com.github.ambry.utils.Time;
@@ -794,8 +795,9 @@ class PutOperation {
             passedInBlobProperties.getOwnerId(), passedInBlobProperties.getContentType(),
             passedInBlobProperties.isPrivate(), passedInBlobProperties.getTimeToLiveInSeconds(),
             passedInBlobProperties.getCreationTimeInMs());
-        operationTracker = new SimpleOperationTracker(routerConfig.routerDatacenterName, partitionId, false,
-            routerConfig.routerPutSuccessTarget, routerConfig.routerPutRequestParallelism);
+        operationTracker =
+            new SimpleOperationTracker(routerConfig.routerDatacenterName, partitionId, RequestOrResponseType.PutRequest,
+                false, routerConfig.routerPutSuccessTarget, routerConfig.routerPutRequestParallelism);
         correlationIdToChunkPutRequestInfo.clear();
         state = ChunkState.Ready;
       } catch (RouterException e) {

@@ -236,48 +236,49 @@ public class HelixClusterManagerTest {
    */
   @Test
   public void clientInitiatedLivenessChangeTest() throws Exception {
+    // TODO (Gopal): add tests here
     ReplicaId replica = clusterManager.getWritablePartitionIds().get(0).getReplicaIds().get(0);
     DataNodeId dataNode = replica.getDataNodeId();
     assertTrue(clusterManager.getReplicaIds(dataNode).contains(replica));
     DiskId disk = replica.getDiskId();
 
     // Verify that everything is up in the beginning.
-    assertFalse(replica.isDown());
+    assertFalse(replica.isDown(null));
     assertEquals(HardwareState.AVAILABLE, dataNode.getState());
     assertEquals(HardwareState.AVAILABLE, disk.getState());
 
     // Trigger node failure events for the replica.
     for (int i = 0; i < clusterMapConfig.clusterMapFixedTimeoutDatanodeErrorThreshold; i++) {
-      clusterManager.onReplicaEvent(replica, ReplicaEventType.Node_Timeout);
+      clusterManager.onReplicaEvent(replica, ReplicaEventType.Node_Timeout, null);
     }
 
     // When node times out, all replicas and all disks on the node should also become unavailable.
-    assertTrue(replica.isDown());
+    assertTrue(replica.isDown(null));
     assertEquals(HardwareState.UNAVAILABLE, dataNode.getState());
     assertEquals(HardwareState.UNAVAILABLE, disk.getState());
 
     // Trigger a successful event to bring the resources up.
-    clusterManager.onReplicaEvent(replica, ReplicaEventType.Node_Response);
-    assertFalse(replica.isDown());
+    clusterManager.onReplicaEvent(replica, ReplicaEventType.Node_Response, null);
+    assertFalse(replica.isDown(null));
     assertEquals(HardwareState.AVAILABLE, dataNode.getState());
     assertEquals(HardwareState.AVAILABLE, disk.getState());
 
     // Similar tests for disks.
     for (int i = 0; i < clusterMapConfig.clusterMapFixedTimeoutDiskErrorThreshold; i++) {
-      clusterManager.onReplicaEvent(replica, ReplicaEventType.Disk_Error);
+      clusterManager.onReplicaEvent(replica, ReplicaEventType.Disk_Error, null);
     }
-    assertTrue(replica.isDown());
+    assertTrue(replica.isDown(null));
     assertEquals(HardwareState.UNAVAILABLE, disk.getState());
     // node should still be available even on disk error.
     assertEquals(HardwareState.AVAILABLE, dataNode.getState());
 
-    clusterManager.onReplicaEvent(replica, ReplicaEventType.Disk_Ok);
-    assertFalse(replica.isDown());
+    clusterManager.onReplicaEvent(replica, ReplicaEventType.Disk_Ok, null);
+    assertFalse(replica.isDown(null));
     assertEquals(HardwareState.AVAILABLE, dataNode.getState());
     assertEquals(HardwareState.AVAILABLE, disk.getState());
 
     // The following does not do anything currently.
-    clusterManager.onReplicaEvent(replica, ReplicaEventType.Partition_ReadOnly);
+    clusterManager.onReplicaEvent(replica, ReplicaEventType.Partition_ReadOnly, null);
     assertStateEquivalency();
   }
 
@@ -371,7 +372,7 @@ public class HelixClusterManagerTest {
 
       // bring the replica down.
       for (int i = 0; i < clusterMapConfig.clusterMapFixedTimeoutDiskErrorThreshold; i++) {
-        clusterManager.onReplicaEvent(replicaId, ReplicaEventType.Disk_Error);
+        clusterManager.onReplicaEvent(replicaId, ReplicaEventType.Disk_Error, null);
       }
       clusterManager.getWritablePartitionIds();
       assertEquals(0L, getCounterValue("getPartitionIdFromStreamMismatchCount"));

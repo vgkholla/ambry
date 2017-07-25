@@ -15,6 +15,7 @@ package com.github.ambry.clustermap;
 
 import com.codahale.metrics.MetricRegistry;
 import com.github.ambry.config.ClusterMapConfig;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.Utils;
 import java.io.IOException;
 import java.io.InputStream;
@@ -197,7 +198,7 @@ class HelixClusterManager implements ClusterMap {
   }
 
   @Override
-  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
+  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
     AmbryReplica replica = (AmbryReplica) replicaId;
     switch (event) {
       case Node_Response:
@@ -238,7 +239,7 @@ class HelixClusterManager implements ClusterMap {
     for (AmbryPartition partition : partitionNameToAmbryPartition.values()) {
       if (partition.getPartitionState() == PartitionState.READ_WRITE) {
         writablePartitions.add(partition);
-        if (areAllReplicasForPartitionUp(partition)) {
+        if (areAllReplicasForPartitionUp(partition, RequestOrResponseType.PutRequest)) {
           healthyWritablePartitions.add(partition);
         }
       }
@@ -268,11 +269,12 @@ class HelixClusterManager implements ClusterMap {
   /**
    * Check whether all replicas of the given {@link AmbryPartition} are up.
    * @param partition the {@link AmbryPartition} to check.
+   * @param requestType the {@link RequestOrResponseType} for which the check needs to be made.
    * @return true if all associated replicas are up; false otherwise.
    */
-  private boolean areAllReplicasForPartitionUp(AmbryPartition partition) {
+  private boolean areAllReplicasForPartitionUp(AmbryPartition partition, RequestOrResponseType requestType) {
     for (AmbryReplica replica : ambryPartitionToAmbryReplicas.get(partition)) {
-      if (replica.isDown()) {
+      if (replica.isDown(requestType)) {
         return false;
       }
     }

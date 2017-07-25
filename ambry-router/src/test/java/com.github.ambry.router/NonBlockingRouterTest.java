@@ -27,6 +27,7 @@ import com.github.ambry.network.NetworkClient;
 import com.github.ambry.network.NetworkClientErrorCode;
 import com.github.ambry.network.RequestInfo;
 import com.github.ambry.network.ResponseInfo;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.MockTime;
 import com.github.ambry.utils.SystemTime;
 import com.github.ambry.utils.TestUtils;
@@ -582,7 +583,7 @@ public class NonBlockingRouterTest {
     final AtomicBoolean invalidResponse = new AtomicBoolean(false);
     ResponseHandler mockResponseHandler = new ResponseHandler(mockClusterMap) {
       @Override
-      public void onEvent(ReplicaId replicaId, Object e) {
+      public void onEvent(ReplicaId replicaId, Object e, RequestOrResponseType requestType) {
         if (e instanceof ServerErrorCode) {
           if (e == ServerErrorCode.No_Error) {
             successfulResponseCount.incrementAndGet();

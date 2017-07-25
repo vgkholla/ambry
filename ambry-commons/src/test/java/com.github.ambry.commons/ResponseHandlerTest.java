@@ -22,6 +22,7 @@ import com.github.ambry.clustermap.ReplicaEventType;
 import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.network.ConnectionPoolTimeoutException;
 import com.github.ambry.network.NetworkClientErrorCode;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.router.RouterErrorCode;
 import com.github.ambry.router.RouterException;
 import java.io.IOException;
@@ -99,9 +100,10 @@ public class ResponseHandlerTest {
     }
 
     @Override
-    public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
+    public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
       lastReplicaID = replicaId;
       lastReplicaEvents.add(event);
+      // TODO (Gopal): Store diff types of requests
     }
 
     @Override
@@ -150,7 +152,8 @@ public class ResponseHandlerTest {
 
     for (Map.Entry<Object, ReplicaEventType[]> entry : expectedEventTypes.entrySet()) {
       mockClusterMap.reset();
-      handler.onEvent(new MockReplicaId(), entry.getKey());
+      // TODO (Gopal): Test diff types of requests
+      handler.onEvent(new MockReplicaId(), entry.getKey(), null);
       Set<ReplicaEventType> expectedEvents = new HashSet<>(Arrays.asList(entry.getValue()));
       Set<ReplicaEventType> generatedEvents = mockClusterMap.getLastReplicaEvents();
       Assert.assertEquals(

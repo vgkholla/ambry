@@ -25,6 +25,7 @@ import com.github.ambry.network.ResponseInfo;
 import com.github.ambry.protocol.GetRequest;
 import com.github.ambry.protocol.GetResponse;
 import com.github.ambry.protocol.RequestOrResponse;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.store.StoreKey;
 import com.github.ambry.utils.ByteBufferInputStream;
 import com.github.ambry.utils.Time;
@@ -207,14 +208,14 @@ class GetManager {
         if (serverError == ServerErrorCode.No_Error) {
           serverError = getResponse.getPartitionResponseInfoList().get(0).getErrorCode();
         }
-        responseHandler.onEvent(replicaId, serverError);
+        responseHandler.onEvent(replicaId, serverError, RequestOrResponseType.GetRequest);
       } catch (Exception e) {
         // Ignore. There is no value in notifying the response handler.
         logger.error("Response deserialization received unexpected error", e);
         routerMetrics.responseDeserializationErrorCount.inc();
       }
     } else {
-      responseHandler.onEvent(replicaId, networkClientErrorCode);
+      responseHandler.onEvent(replicaId, networkClientErrorCode, RequestOrResponseType.GetRequest);
     }
     return getResponse;
   }

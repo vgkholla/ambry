@@ -17,6 +17,7 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import com.github.ambry.clustermap.ClusterMap;
 import com.github.ambry.clustermap.DataNodeId;
+import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.commons.BlobId;
 import com.github.ambry.commons.ResponseHandler;
 import com.github.ambry.commons.ServerErrorCode;
@@ -41,6 +42,7 @@ import com.github.ambry.protocol.ReplicaMetadataRequest;
 import com.github.ambry.protocol.ReplicaMetadataRequestInfo;
 import com.github.ambry.protocol.ReplicaMetadataResponse;
 import com.github.ambry.protocol.ReplicaMetadataResponseInfo;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.store.FindToken;
 import com.github.ambry.store.FindTokenFactory;
 import com.github.ambry.store.MessageInfo;
@@ -171,7 +173,9 @@ class ReplicaThread implements Runnable {
 
           List<RemoteReplicaInfo> activeReplicasPerNode = new ArrayList<RemoteReplicaInfo>();
           for (RemoteReplicaInfo remoteReplicaInfo : replicasToReplicatePerNode) {
-            if (!remoteReplicaInfo.getReplicaId().isDown()) {
+            ReplicaId replicaId = remoteReplicaInfo.getReplicaId();
+            if (!replicaId.isDown(RequestOrResponseType.ReplicaMetadataRequest) && !replicaId.isDown(
+                RequestOrResponseType.GetRequest)) {
               activeReplicasPerNode.add(remoteReplicaInfo);
             }
           }
@@ -194,7 +198,7 @@ class ReplicaThread implements Runnable {
                 // exception happened in checkout connection phase
                 checkoutConnectionTimeInMs = SystemTime.getInstance().milliseconds() - startTimeInMs;
                 // recording an exception for any replica on a node will record a node timeout failure
-                responseHandler.onEvent(activeReplicasPerNode.get(0).getReplicaId(), e);
+                responseHandler.onEvent(activeReplicasPerNode.get(0).getReplicaId(), e, null);
               } else if (exchangeMetadataTimeInMs == -1) {
                 // exception happened in exchange metadata phase
                 exchangeMetadataTimeInMs = SystemTime.getInstance().milliseconds() - startTimeInMs;
@@ -281,7 +285,8 @@ class ReplicaThread implements Runnable {
           RemoteReplicaInfo remoteReplicaInfo = replicasToReplicatePerNode.get(i);
           ReplicaMetadataResponseInfo replicaMetadataResponseInfo =
               response.getReplicaMetadataResponseInfoList().get(i);
-          responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), replicaMetadataResponseInfo.getError());
+          responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), replicaMetadataResponseInfo.getError(),
+              RequestOrResponseType.ReplicaMetadataRequest);
           if (replicaMetadataResponseInfo.getError() == ServerErrorCode.No_Error) {
             try {
               logger.trace("Remote node: {} Thread name: {} Remote replica: {} Token from remote: {} Replica lag: {} ",
@@ -303,7 +308,8 @@ class ReplicaThread implements Runnable {
               logger.error(
                   "Remote node: " + remoteNode + " Thread name: " + threadName + " Remote replica: " + remoteReplicaInfo
                       .getReplicaId(), e);
-              responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), e);
+              responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), e,
+                  RequestOrResponseType.ReplicaMetadataRequest);
               ExchangeMetadataResponse exchangeMetadataResponse =
                   new ExchangeMetadataResponse(ServerErrorCode.Unknown_Error);
               exchangeMetadataResponseList.add(exchangeMetadataResponse);
@@ -414,7 +420,8 @@ class ReplicaThread implements Runnable {
       }
       return response;
     } catch (IOException e) {
-      responseHandler.onEvent(replicasToReplicatePerNode.get(0).getReplicaId(), e);
+      responseHandler.onEvent(replicasToReplicatePerNode.get(0).getReplicaId(), e,
+          RequestOrResponseType.ReplicaMetadataRequest);
       throw e;
     }
   }
@@ -622,7 +629,7 @@ class ReplicaThread implements Runnable {
               " Get Request returned error when trying to get missing keys " + getResponse.getError());
         }
       } catch (IOException e) {
-        responseHandler.onEvent(replicasToReplicatePerNode.get(0).getReplicaId(), e);
+        responseHandler.onEvent(replicasToReplicatePerNode.get(0).getReplicaId(), e, RequestOrResponseType.GetRequest);
         throw e;
       }
     }
@@ -652,7 +659,8 @@ class ReplicaThread implements Runnable {
         if (exchangeMetadataResponse.missingStoreKeys.size() > 0) {
           PartitionResponseInfo partitionResponseInfo =
               getResponse.getPartitionResponseInfoList().get(partitionResponseInfoIndex);
-          responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), partitionResponseInfo.getErrorCode());
+          responseHandler.onEvent(remoteReplicaInfo.getReplicaId(), partitionResponseInfo.getErrorCode(),
+              RequestOrResponseType.GetRequest);
           partitionResponseInfoIndex++;
           if (partitionResponseInfo.getPartition().compareTo(remoteReplicaInfo.getReplicaId().getPartitionId()) != 0) {
             throw new IllegalStateException(

@@ -13,6 +13,7 @@
  */
 package com.github.ambry.clustermap;
 
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -116,7 +117,7 @@ class PartitionLayout {
         writablePartitions.add(partition);
         boolean up = true;
         for (Replica replica : partition.getReplicas()) {
-          if (replica.isDown()) {
+          if (replica.isDown(RequestOrResponseType.PutRequest)) {
             up = false;
             break;
           }

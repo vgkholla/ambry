@@ -16,6 +16,7 @@ package com.github.ambry.clustermap;
 import com.codahale.metrics.MetricRegistry;
 import com.github.ambry.network.Port;
 import com.github.ambry.network.PortType;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -286,7 +287,7 @@ public class MockClusterMap implements ClusterMap {
   }
 
   @Override
-  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
+  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
     switch (event) {
       case Disk_Error:
         ((MockDiskId) replicaId.getDiskId()).onDiskError();

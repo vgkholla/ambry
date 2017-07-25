@@ -17,6 +17,7 @@ import com.codahale.metrics.Counter;
 import com.codahale.metrics.Histogram;
 import com.github.ambry.clustermap.PartitionId;
 import com.github.ambry.clustermap.ReplicaId;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.Pair;
 import com.github.ambry.utils.Time;
 import java.util.HashMap;
@@ -57,6 +58,7 @@ class AdaptiveOperationTracker extends SimpleOperationTracker {
    * Constructs an {@link AdaptiveOperationTracker}
    * @param datacenterName The datacenter where the router is located.
    * @param partitionId The partition on which the operation is performed.
+   * @param requestType The {@link RequestOrResponseType} of the request that will be made to the storage node.
    * @param crossColoEnabled {@code true} if requests can be sent to remote replicas, {@code false}
    *                                otherwise.
    * @param successTarget The number of successful responses required to succeed the operation.
@@ -67,10 +69,10 @@ class AdaptiveOperationTracker extends SimpleOperationTracker {
    * @param pastDueCounter the {@link Counter} that tracks the number of times a request is past due.
    * @param quantile the quantile cutoff to use for when evaluating requests against the trackers.
    */
-  AdaptiveOperationTracker(String datacenterName, PartitionId partitionId, boolean crossColoEnabled, int successTarget,
-      int parallelism, Time time, Histogram localColoTracker, Histogram crossColoTracker, Counter pastDueCounter,
-      double quantile) {
-    super(datacenterName, partitionId, crossColoEnabled, successTarget, parallelism, true);
+  AdaptiveOperationTracker(String datacenterName, PartitionId partitionId, RequestOrResponseType requestType,
+      boolean crossColoEnabled, int successTarget, int parallelism, Time time, Histogram localColoTracker,
+      Histogram crossColoTracker, Counter pastDueCounter, double quantile) {
+    super(datacenterName, partitionId, requestType, crossColoEnabled, successTarget, parallelism, true);
     this.datacenterName = datacenterName;
     this.time = time;
     this.localColoTracker = localColoTracker;

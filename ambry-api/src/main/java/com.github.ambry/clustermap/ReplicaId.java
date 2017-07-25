@@ -13,6 +13,7 @@
  */
 package com.github.ambry.clustermap;
 
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.util.List;
 
 
@@ -71,7 +72,8 @@ public interface ReplicaId {
   DiskId getDiskId();
 
   /**
-   * Returns true if the replica is down
+   * @param requestType the type of request that will be made. {@code null} signifies any type of request.
+   * @return true if the replica is down for {@code requestType}
    */
-  boolean isDown();
+  boolean isDown(RequestOrResponseType requestType);
 }

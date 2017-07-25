@@ -13,6 +13,7 @@
  */
 package com.github.ambry.clustermap;
 
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,7 +90,8 @@ class Replica implements ReplicaId {
   }
 
   @Override
-  public boolean isDown() {
+  public boolean isDown(RequestOrResponseType requestType) {
+    // TODO (Gopal)
     return getDataNodeId().getState() == HardwareState.UNAVAILABLE
         || getDiskId().getState() == HardwareState.UNAVAILABLE;
   }

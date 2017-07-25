@@ -13,6 +13,7 @@
  */
 package com.github.ambry.clustermap;
 
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -91,7 +92,8 @@ public class MockReplicaId implements ReplicaId {
    * @return true if the replica is down; false otherwise.
    */
   @Override
-  public boolean isDown() {
+  public boolean isDown(RequestOrResponseType requestType) {
+    // TODO (Gopal)
     return isMarkedDown || getDataNodeId().getState() == HardwareState.UNAVAILABLE
         || getDiskId().getState() == HardwareState.UNAVAILABLE;
   }

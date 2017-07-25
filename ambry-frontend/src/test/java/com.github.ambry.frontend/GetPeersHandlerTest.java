@@ -25,6 +25,7 @@ import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.messageformat.BlobInfo;
 import com.github.ambry.network.Port;
 import com.github.ambry.network.PortType;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.rest.MockRestRequest;
 import com.github.ambry.rest.MockRestResponseChannel;
 import com.github.ambry.rest.RestMethod;
@@ -383,7 +384,7 @@ class TailoredPeersClusterMap implements ClusterMap {
   }
 
   @Override
-  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
+  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
     throw new IllegalStateException();
   }
 

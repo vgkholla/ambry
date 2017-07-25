@@ -15,6 +15,7 @@ package com.github.ambry.router;
 
 import com.github.ambry.clustermap.PartitionId;
 import com.github.ambry.clustermap.ReplicaId;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -73,14 +74,15 @@ class SimpleOperationTracker implements OperationTracker {
    *
    * @param datacenterName The datacenter where the router is located.
    * @param partitionId The partition on which the operation is performed.
+   * @param requestType The {@link RequestOrResponseType} of the request that will be made to the storage node.
    * @param crossColoEnabled {@code true} if requests can be sent to remote replicas, {@code false}
    *                                otherwise.
    * @param successTarget The number of successful responses required to succeed the operation.
    * @param parallelism The maximum number of inflight requests at any point of time.
    * @param shuffleReplicas Indicates if the replicas need to be shuffled.
    */
-  SimpleOperationTracker(String datacenterName, PartitionId partitionId, boolean crossColoEnabled, int successTarget,
-      int parallelism, boolean shuffleReplicas) {
+  SimpleOperationTracker(String datacenterName, PartitionId partitionId, RequestOrResponseType requestType,
+      boolean crossColoEnabled, int successTarget, int parallelism, boolean shuffleReplicas) {
     if (parallelism < 1) {
       throw new IllegalArgumentException("Parallelism has to be > 0. Configured to be " + parallelism);
     }
@@ -95,7 +97,7 @@ class SimpleOperationTracker implements OperationTracker {
     }
     for (ReplicaId replicaId : replicas) {
       String replicaDcName = replicaId.getDataNodeId().getDatacenterName();
-      if (!replicaId.isDown()) {
+      if (!replicaId.isDown(requestType)) {
         if (replicaDcName.equals(datacenterName)) {
           replicaPool.addFirst(replicaId);
         } else if (crossColoEnabled) {
@@ -123,14 +125,15 @@ class SimpleOperationTracker implements OperationTracker {
    *
    * @param datacenterName The datacenter where the router is located.
    * @param partitionId The partition on which the operation is performed.
+   * @param requestType The {@link RequestOrResponseType} of the request that will be made to the storage node.
    * @param crossColoEnabled {@code true} if requests can be sent to remote replicas, {@code false}
    *                                otherwise.
    * @param successTarget The number of successful responses required to succeed the operation.
    * @param parallelism The maximum number of inflight requests at any point of time.
    */
-  SimpleOperationTracker(String datacenterName, PartitionId partitionId, boolean crossColoEnabled, int successTarget,
-      int parallelism) {
-    this(datacenterName, partitionId, crossColoEnabled, successTarget, parallelism, true);
+  SimpleOperationTracker(String datacenterName, PartitionId partitionId, RequestOrResponseType requestType,
+      boolean crossColoEnabled, int successTarget, int parallelism) {
+    this(datacenterName, partitionId, requestType, crossColoEnabled, successTarget, parallelism, true);
   }
 
   @Override

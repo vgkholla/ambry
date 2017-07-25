@@ -18,6 +18,7 @@ import com.github.ambry.clustermap.ReplicaEventType;
 import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.network.ConnectionPoolTimeoutException;
 import com.github.ambry.network.NetworkClientErrorCode;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.IOException;
 import java.net.SocketException;
 
@@ -44,33 +45,39 @@ public class ResponseHandler {
    * Act on an event in the form of a {@link ServerErrorCode} on the given {@link ReplicaId}
    * @param replicaId the {@link ReplicaId} to which the request that received the error was made.
    * @param errorCode the {@link ServerErrorCode} received for the request.
+   * @param requestType the type of the request that triggered this event.
    */
-  private void onServerEvent(ReplicaId replicaId, ServerErrorCode errorCode) {
+  private void onServerEvent(ReplicaId replicaId, ServerErrorCode errorCode, RequestOrResponseType requestType) {
     switch (errorCode) {
       case IO_Error:
       case Disk_Unavailable:
-        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Disk_Error);
+        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Disk_Error, requestType);
+        break;
+      case Temporarily_Unavailable:
+        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Request_Temporarily_Unavailable, requestType);
         break;
       case Partition_ReadOnly:
-        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Partition_ReadOnly);
+        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Partition_ReadOnly, requestType);
         //fall through
       default:
-        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Disk_Ok);
+        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Disk_Ok, requestType);
         break;
     }
     // Regardless of what the error code is (or there is no error), it is a node response event.
-    clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Response);
+    clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Response, requestType);
   }
 
   /**
    * Act on an event in the form of a {@link NetworkClientErrorCode} on the given {@link ReplicaId}
    * @param replicaId the {@link ReplicaId} to which the request that received the error was made.
    * @param errorCode the {@link NetworkClientErrorCode} received for the request.
+   * @param requestType the type of the request that triggered this event.
    */
-  private void onNetworkEvent(ReplicaId replicaId, NetworkClientErrorCode errorCode) {
+  private void onNetworkEvent(ReplicaId replicaId, NetworkClientErrorCode errorCode,
+      RequestOrResponseType requestType) {
     switch (errorCode) {
       case NetworkError:
-        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Timeout);
+        clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Timeout, requestType);
         break;
       default:
         break;
@@ -81,10 +88,11 @@ public class ResponseHandler {
    * Perform the action when a request to the given {@link ReplicaId} is met with an exception.
    * @param replicaId the {@link ReplicaId} to which the request that received the exception was made.
    * @param e the {@link Exception} received.
+   * @param requestType the type of the request that triggered this event.
    */
-  private void onException(ReplicaId replicaId, Exception e) {
+  private void onException(ReplicaId replicaId, Exception e, RequestOrResponseType requestType) {
     if (e instanceof SocketException || e instanceof IOException || e instanceof ConnectionPoolTimeoutException) {
-      clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Timeout);
+      clusterMap.onReplicaEvent(replicaId, ReplicaEventType.Node_Timeout, requestType);
     }
   }
 
@@ -95,14 +103,15 @@ public class ResponseHandler {
    * @param replicaId the {@link ReplicaId} to which the request was sent.
    * @param event the type of the event. The event could be an {@link Exception}, {@link NetworkClientErrorCode} or a
    * {@link ServerErrorCode}.
+   * @param requestType the type of the request that triggered this event.
    */
-  public void onEvent(ReplicaId replicaId, Object event) {
+  public void onEvent(ReplicaId replicaId, Object event, RequestOrResponseType requestType) {
     if (event instanceof ServerErrorCode) {
-      onServerEvent(replicaId, (ServerErrorCode) event);
+      onServerEvent(replicaId, (ServerErrorCode) event, requestType);
     } else if (event instanceof Exception) {
-      onException(replicaId, (Exception) event);
+      onException(replicaId, (Exception) event, requestType);
     } else if (event instanceof NetworkClientErrorCode) {
-      onNetworkEvent(replicaId, (NetworkClientErrorCode) event);
+      onNetworkEvent(replicaId, (NetworkClientErrorCode) event, requestType);
     }
   }
 }

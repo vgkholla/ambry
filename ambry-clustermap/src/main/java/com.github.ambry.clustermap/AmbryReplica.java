@@ -13,6 +13,7 @@
  */
 package com.github.ambry.clustermap;
 
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -107,7 +108,8 @@ class AmbryReplica implements ReplicaId {
   }
 
   @Override
-  public boolean isDown() {
+  public boolean isDown(RequestOrResponseType requestType) {
+    // TODO (Gopal)
     return disk.getState() == HardwareState.UNAVAILABLE;
   }
 

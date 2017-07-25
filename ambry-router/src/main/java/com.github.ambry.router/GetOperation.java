@@ -28,6 +28,7 @@ import com.github.ambry.protocol.GetOption;
 import com.github.ambry.protocol.GetRequest;
 import com.github.ambry.protocol.GetResponse;
 import com.github.ambry.protocol.PartitionRequestInfo;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.Time;
 import java.util.Collections;
 import java.util.List;
@@ -203,14 +204,16 @@ abstract class GetOperation {
     OperationTracker operationTracker;
     String trackerType = routerConfig.routerGetOperationTrackerType;
     if (trackerType.equals(SimpleOperationTracker.class.getSimpleName())) {
-      operationTracker = new SimpleOperationTracker(routerConfig.routerDatacenterName, partitionId,
-          routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
-          routerConfig.routerGetRequestParallelism);
+      operationTracker =
+          new SimpleOperationTracker(routerConfig.routerDatacenterName, partitionId, RequestOrResponseType.GetRequest,
+              routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
+              routerConfig.routerGetRequestParallelism);
     } else if (trackerType.equals(AdaptiveOperationTracker.class.getSimpleName())) {
-      operationTracker = new AdaptiveOperationTracker(routerConfig.routerDatacenterName, partitionId,
-          routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
-          routerConfig.routerGetRequestParallelism, time, localColoTracker, crossColoTracker, pastDueCounter,
-          routerConfig.routerLatencyToleranceQuantile);
+      operationTracker =
+          new AdaptiveOperationTracker(routerConfig.routerDatacenterName, partitionId, RequestOrResponseType.GetRequest,
+              routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
+              routerConfig.routerGetRequestParallelism, time, localColoTracker, crossColoTracker, pastDueCounter,
+              routerConfig.routerLatencyToleranceQuantile);
     } else {
       throw new IllegalArgumentException("Unrecognized tracker type: " + trackerType);
     }

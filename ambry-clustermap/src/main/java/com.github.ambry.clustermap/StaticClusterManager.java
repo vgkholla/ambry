@@ -14,6 +14,7 @@
 package com.github.ambry.clustermap;
 
 import com.codahale.metrics.MetricRegistry;
+import com.github.ambry.protocol.RequestOrResponseType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -470,7 +471,7 @@ class StaticClusterManager implements ClusterMap {
   }
 
   @Override
-  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event) {
+  public void onReplicaEvent(ReplicaId replicaId, ReplicaEventType event, RequestOrResponseType requestType) {
     switch (event) {
       case Disk_Error:
         ((Disk) replicaId.getDiskId()).onDiskError();

@@ -22,6 +22,7 @@ import com.github.ambry.clustermap.MockReplicaId;
 import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.network.Port;
 import com.github.ambry.network.PortType;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.MockTime;
 import com.github.ambry.utils.Time;
 import java.util.ArrayList;
@@ -104,7 +105,7 @@ public class OperationTrackerTest {
   @Test
   public void localSucceedTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(false, 2, 3);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, false, 2, 3);
     // 3-0-0-0; 9-0-0-0
     assertFalse("Operation should not have been done.", ot.isDone());
     sendRequests(ot, 3, false);
@@ -134,7 +135,7 @@ public class OperationTrackerTest {
   @Test
   public void localFailTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(false, 2, 3);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, false, 2, 3);
     // 3-0-0-0; 9-0-0-0
     assertFalse("Operation should not have been done.", ot.isDone());
     sendRequests(ot, 3, false);
@@ -164,7 +165,7 @@ public class OperationTrackerTest {
   @Test
   public void localSucceedWithDifferentParameterTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, 1, 2);
     // 3-0-0-0; 9-0-0-0
     sendRequests(ot, 2, false);
     // 1-2-0-0; 9-0-0-0
@@ -202,7 +203,7 @@ public class OperationTrackerTest {
   @Test
   public void remoteReplicaTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, 1, 2);
     // 3-0-0-0; 9-0-0-0
     sendRequests(ot, 2, false);
     // 1-2-0-0; 9-0-0-0
@@ -254,7 +255,7 @@ public class OperationTrackerTest {
   @Test
   public void fullSuccessTargetTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 12, 3);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, 12, 3);
     while (!ot.hasSucceeded()) {
       sendRequests(ot, 3, false);
       for (int i = 0; i < 3; i++) {
@@ -289,7 +290,7 @@ public class OperationTrackerTest {
     mockPartition = new MockPartitionId();
     populateReplicaList(replicaCount);
     localDcName = datanodes.get(0).getDatacenterName();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, 1, 2);
     sendRequests(ot, 2, true);
     ot.onResponse(inflightReplicas.poll(), false);
     ot.onResponse(inflightReplicas.poll(), false);
@@ -330,7 +331,7 @@ public class OperationTrackerTest {
   public void notEnoughReplicasToMeetTargetTest() {
     initialize();
     try {
-      getOperationTracker(true, 13, 3);
+      getOperationTracker(RequestOrResponseType.GetRequest, true, 13, 3);
       fail("Should have failed to construct tracker because success target > replica count");
     } catch (IllegalArgumentException e) {
       // expected. Nothing to do.
@@ -345,7 +346,7 @@ public class OperationTrackerTest {
     initialize();
     for (int parallelism : Arrays.asList(0, -1)) {
       try {
-        getOperationTracker(true, 13, 0);
+        getOperationTracker(RequestOrResponseType.GetRequest, true, 13, 0);
         fail("Should have failed to construct tracker because parallelism is " + parallelism);
       } catch (IllegalArgumentException e) {
         // expected. Nothing to do.
@@ -360,10 +361,10 @@ public class OperationTrackerTest {
     int replicaCount = 12;
     List<Port> portList = Collections.singletonList(new Port(PORT, PortType.PLAINTEXT));
     List<String> mountPaths = Collections.singletonList("mockMountPath");
-    datanodes = new ArrayList<>(Arrays.asList(
-        new MockDataNodeId[]{new MockDataNodeId(portList, mountPaths, "dc-0"), new MockDataNodeId(portList, mountPaths,
+    datanodes = new ArrayList<>(Arrays.asList(new MockDataNodeId(portList, mountPaths, "dc-0"),
+        new MockDataNodeId(portList, mountPaths,
             "dc-1"), new MockDataNodeId(portList, mountPaths, "dc-2"), new MockDataNodeId(portList, mountPaths,
-            "dc-3")}));
+            "dc-3")));
     mockPartition = new MockPartitionId();
     populateReplicaList(replicaCount);
     localDcName = datanodes.get(0).getDatacenterName();
@@ -381,20 +382,21 @@ public class OperationTrackerTest {
 
   /**
    * Returns the right {@link OperationTracker} based on {@link #operationTrackerType}.
+   * @param requestType The {@link RequestOrResponseType} of the request that will be made to the storage node.
    * @param crossColoEnabled {@code true} if cross colo needs to be enabled. {@code false} otherwise.
    * @param successTarget the number of successful responses required for the operation to succeed.
    * @param parallelism the number of parallel requests that can be in flight.
    * @return the right {@link OperationTracker} based on {@link #operationTrackerType}.
    */
-  private OperationTracker getOperationTracker(boolean crossColoEnabled, int successTarget, int parallelism) {
+  private OperationTracker getOperationTracker(RequestOrResponseType requestType, boolean crossColoEnabled, int successTarget, int parallelism) {
     OperationTracker tracker;
     switch (operationTrackerType) {
       case SIMPLE_OP_TRACKER:
-        tracker = new SimpleOperationTracker(localDcName, mockPartition, crossColoEnabled, successTarget, parallelism);
+        tracker = new SimpleOperationTracker(localDcName, mockPartition, requestType, crossColoEnabled, successTarget, parallelism);
         break;
       case ADAPTIVE_OP_TRACKER:
         tracker =
-            new AdaptiveOperationTracker(localDcName, mockPartition, crossColoEnabled, successTarget, parallelism, time,
+            new AdaptiveOperationTracker(localDcName, mockPartition, requestType, crossColoEnabled, successTarget, parallelism, time,
                 localColoTracker, crossColoEnabled ? crossColoTracker : null, pastDueCounter, QUANTILE);
         break;
       default:
@@ -449,7 +451,7 @@ public class OperationTrackerTest {
       ((MockReplicaId) mockReplicaIds.get(i)).markReplicaDownStatus(downStatus.get(i));
     }
     localDcName = datanodes.get(0).getDatacenterName();
-    OperationTracker ot = getOperationTracker(true, 2, 3);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, 2, 3);
     // The iterator should return all replicas, with the first half being the up replicas
     // and the last half being the down replicas.
     Iterator<ReplicaId> itr = ot.getReplicaIterator();
@@ -457,9 +459,9 @@ public class OperationTrackerTest {
     while (itr.hasNext()) {
       ReplicaId nextReplica = itr.next();
       if (count < totalReplicaCount - downReplicaCount) {
-        assertFalse(nextReplica.isDown());
+        assertFalse(nextReplica.isDown(null));
       } else {
-        assertTrue(nextReplica.isDown());
+        assertTrue(nextReplica.isDown(null));
       }
       count++;
     }

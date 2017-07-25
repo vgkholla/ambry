@@ -22,6 +22,7 @@ import com.github.ambry.clustermap.MockReplicaId;
 import com.github.ambry.clustermap.ReplicaId;
 import com.github.ambry.network.Port;
 import com.github.ambry.network.PortType;
+import com.github.ambry.protocol.RequestOrResponseType;
 import com.github.ambry.utils.MockTime;
 import com.github.ambry.utils.Pair;
 import com.github.ambry.utils.TestUtils;
@@ -96,7 +97,7 @@ public class AdaptiveOperationTrackerTest {
     double localColoCutoff = localColoTracker.getSnapshot().getValue(QUANTILE);
     double crossColoCutoff = crossColoTracker.getSnapshot().getValue(QUANTILE);
 
-    OperationTracker ot = getOperationTracker(true, REPLICA_COUNT, 2);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, REPLICA_COUNT, 2);
     // 3-0-0-0; 3-0-0-0
     sendRequests(ot, 2);
     // 1-2-0-0; 3-0-0-0
@@ -167,7 +168,7 @@ public class AdaptiveOperationTrackerTest {
     primeTracker(crossColoTracker, AdaptiveOperationTracker.MIN_DATA_POINTS_REQUIRED, CROSS_COLO_LATENCY_RANGE);
     double localColoCutoff = localColoTracker.getSnapshot().getValue(QUANTILE);
 
-    OperationTracker ot = getOperationTracker(false, 1, 1);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, false, 1, 1);
     // 3-0-0-0
     sendRequests(ot, 1);
     // 2-1-0-0
@@ -200,8 +201,8 @@ public class AdaptiveOperationTrackerTest {
     double localColoCutoff = localColoTracker.getSnapshot().getValue(1);
 
     OperationTracker ot =
-        new AdaptiveOperationTracker(localDcName, mockPartition, false, 1, 1, time, localColoTracker, null,
-            pastDueCounter, 1);
+        new AdaptiveOperationTracker(localDcName, mockPartition, RequestOrResponseType.GetRequest, false, 1, 1, time,
+            localColoTracker, null, pastDueCounter, 1);
     // 3-0-0-0
     sendRequests(ot, 1);
     // 2-1-0-0
@@ -235,14 +236,16 @@ public class AdaptiveOperationTrackerTest {
 
   /**
    * Returns an instance of {@link AdaptiveOperationTracker}.
+   * @param requestType The {@link RequestOrResponseType} of the request that will be made to the storage node.
    * @param crossColoEnabled {@code true} if cross colo needs to be enabled. {@code false} otherwise.
    * @param successTarget the number of successful responses required for the operation to succeed.
    * @param parallelism the number of parallel requests that can be in flight.
    * @return an instance of {@link AdaptiveOperationTracker} with the given parameters.
    */
-  private OperationTracker getOperationTracker(boolean crossColoEnabled, int successTarget, int parallelism) {
-    return new AdaptiveOperationTracker(localDcName, mockPartition, crossColoEnabled, successTarget, parallelism, time,
-        localColoTracker, crossColoEnabled ? crossColoTracker : null, pastDueCounter, QUANTILE);
+  private OperationTracker getOperationTracker(RequestOrResponseType requestType, boolean crossColoEnabled,
+      int successTarget, int parallelism) {
+    return new AdaptiveOperationTracker(localDcName, mockPartition, requestType, crossColoEnabled, successTarget,
+        parallelism, time, localColoTracker, crossColoEnabled ? crossColoTracker : null, pastDueCounter, QUANTILE);
   }
 
   /**
@@ -288,7 +291,7 @@ public class AdaptiveOperationTrackerTest {
    */
   private void doTrackerUpdateTest(boolean succeedRequests) throws InterruptedException {
     long timeIncrement = 10;
-    OperationTracker ot = getOperationTracker(true, REPLICA_COUNT, REPLICA_COUNT);
+    OperationTracker ot = getOperationTracker(RequestOrResponseType.GetRequest, true, REPLICA_COUNT, REPLICA_COUNT);
     // 3-0-0-0; 3-0-0-0
     sendRequests(ot, REPLICA_COUNT);
     // 0-3-0-0; 0-3-0-0

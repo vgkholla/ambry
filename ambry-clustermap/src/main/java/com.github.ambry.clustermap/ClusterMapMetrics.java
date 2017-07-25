@@ -249,7 +249,7 @@ class ClusterMapMetrics {
       int replicaCount = replicas.size();
       int downReplicas = 0;
       for (ReplicaId replicaId : replicas) {
-        if (replicaId.isDown()) {
+        if (replicaId.isDown(null)) {
           downReplicas++;
         }
       }
