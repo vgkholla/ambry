@@ -1493,6 +1493,7 @@ class PersistentIndex {
             hardDeleter.postLogFlush();
           }
 
+          List<IndexSegment> prevInfosToWrite = new ArrayList<>();
           IndexSegment prevInfo =
               indexSegments.size() > 1 ? indexSegments.lowerEntry(lastEntry.getKey()).getValue() : null;
           Offset currentLogEndPointer = log.getEndOffset();
@@ -1502,11 +1503,15 @@ class PersistentIndex {
                   + " greater than the log end offset " + currentLogEndPointer;
               throw new StoreException(message, StoreErrorCodes.IOError);
             }
-            logger.trace("Index : " + dataDir + " writing prev index with end offset " + prevInfo.getEndOffset());
-            prevInfo.writeIndexSegmentToFile(prevInfo.getEndOffset());
-            prevInfo.map(true);
+            prevInfosToWrite.add(prevInfo);
             Map.Entry<Offset, IndexSegment> infoEntry = indexSegments.lowerEntry(prevInfo.getStartOffset());
             prevInfo = infoEntry != null ? infoEntry.getValue() : null;
+          }
+          for (int i = prevInfosToWrite.size() - 1; i >= 0; i--) {
+            IndexSegment toWrite = prevInfosToWrite.get(i);
+            logger.trace("Index : {} writing prev index with end offset {}", dataDir, toWrite.getEndOffset());
+            toWrite.writeIndexSegmentToFile(toWrite.getEndOffset());
+            toWrite.map(true);
           }
           currentInfo.writeIndexSegmentToFile(indexEndOffsetBeforeFlush);
         }
