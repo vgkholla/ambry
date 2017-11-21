@@ -197,18 +197,21 @@ abstract class GetOperation {
   /**
    * Gets an {@link OperationTracker} based on the config and {@code partitionId}.
    * @param partitionId the {@link PartitionId} for which a tracker is required.
+   * @param datacenterId the id of datacenter where the blob was originally put.
    * @return an {@link OperationTracker} based on the config and {@code partitionId}.
    */
-  protected OperationTracker getOperationTracker(PartitionId partitionId) {
+  protected OperationTracker getOperationTracker(PartitionId partitionId, byte datacenterId) {
     OperationTracker operationTracker;
     String trackerType = routerConfig.routerGetOperationTrackerType;
+    String preferredDcName =
+        datacenterId == clusterMap.getLocalDatacenterId() ? null : clusterMap.getDatacenterName(datacenterId);
     if (trackerType.equals(SimpleOperationTracker.class.getSimpleName())) {
       operationTracker = new SimpleOperationTracker(routerConfig.routerDatacenterName, partitionId,
-          routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
+          routerConfig.routerGetCrossDcEnabled, preferredDcName, routerConfig.routerGetSuccessTarget,
           routerConfig.routerGetRequestParallelism);
     } else if (trackerType.equals(AdaptiveOperationTracker.class.getSimpleName())) {
       operationTracker = new AdaptiveOperationTracker(routerConfig.routerDatacenterName, partitionId,
-          routerConfig.routerGetCrossDcEnabled, routerConfig.routerGetSuccessTarget,
+          routerConfig.routerGetCrossDcEnabled, preferredDcName, routerConfig.routerGetSuccessTarget,
           routerConfig.routerGetRequestParallelism, time, localColoTracker, crossColoTracker, pastDueCounter,
           routerConfig.routerLatencyToleranceQuantile);
     } else {

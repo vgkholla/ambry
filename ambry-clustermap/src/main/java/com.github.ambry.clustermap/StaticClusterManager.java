@@ -39,7 +39,6 @@ class StaticClusterManager implements ClusterMap {
   protected final HardwareLayout hardwareLayout;
   protected final PartitionLayout partitionLayout;
   private final MetricRegistry metricRegistry;
-  private final ClusterMapMetrics clusterMapMetrics;
   private final byte localDatacenterId;
 
   private Logger logger = LoggerFactory.getLogger(getClass());
@@ -58,7 +57,6 @@ class StaticClusterManager implements ClusterMap {
     this.hardwareLayout = partitionLayout.getHardwareLayout();
     this.partitionLayout = partitionLayout;
     this.metricRegistry = metricRegistry;
-    this.clusterMapMetrics = new ClusterMapMetrics(this.hardwareLayout, this.partitionLayout, this.metricRegistry);
     localDatacenterId = localDatacenterName != null && !localDatacenterName.isEmpty() ? hardwareLayout.findDatacenter(
         localDatacenterName).getId() : ClusterMapUtils.UNKNOWN_DATACENTER_ID;
   }
@@ -99,6 +97,11 @@ class StaticClusterManager implements ClusterMap {
   @Override
   public byte getLocalDatacenterId() {
     return localDatacenterId;
+  }
+
+  @Override
+  public String getDatacenterName(byte id) {
+    return hardwareLayout.getDatacenterById(id).getName();
   }
 
   @Override
