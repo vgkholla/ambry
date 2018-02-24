@@ -464,6 +464,61 @@ class BlobStore implements Store {
   }
 
   @Override
+  public void updateTtl(MessageWriteSet messageSetToUpdateTtls) throws StoreException {
+    checkStarted();
+    try {
+      List<IndexValue> indexValuesToUpdateTtl = new ArrayList<>();
+      List<MessageInfo> infoList = messageSetToUpdateTtls.getMessageSetInfo();
+      Offset indexEndOffsetBeforeCheck = index.getCurrentEndOffset();
+      for (MessageInfo info : infoList) {
+        IndexValue value = index.findKey(info.getStoreKey());
+        if (value == null) {
+          throw new StoreException(
+              "Cannot update ttl for id " + info.getStoreKey() + " since it is not present in the index.",
+              StoreErrorCodes.ID_Not_Found);
+        } else if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+          throw new StoreException(
+              "Cannot update ttl for id " + info.getStoreKey() + " since it is already deleted in the index.",
+              StoreErrorCodes.ID_Deleted);
+        }
+        indexValuesToUpdateTtl.add(value);
+      }
+      synchronized (storeWriteLock) {
+        Offset currentIndexEndOffset = index.getCurrentEndOffset();
+        if (!currentIndexEndOffset.equals(indexEndOffsetBeforeCheck)) {
+          FileSpan fileSpan = new FileSpan(indexEndOffsetBeforeCheck, currentIndexEndOffset);
+          for (MessageInfo info : infoList) {
+            IndexValue value = index.findKey(info.getStoreKey(), fileSpan);
+            if (value != null && value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+              throw new StoreException(
+                  "Cannot update id " + info.getStoreKey() + " since it is already deleted in the index.",
+                  StoreErrorCodes.ID_Deleted);
+            }
+          }
+        }
+        Offset endOffsetOfLastMessage = log.getEndOffset();
+        messageSetToUpdateTtls.writeTo(log);
+        logger.info("Store : {} ttl updated in log", dataDir);
+        for (MessageInfo info : infoList) {
+          FileSpan fileSpan = log.getFileSpanForMessage(endOffsetOfLastMessage, info.getSize());
+          IndexValue updatedValue =
+              index.updateTtl(info.getStoreKey(), fileSpan, info.getExpirationTimeInMs(), info.getOperationTimeMs());
+          logger.info("Store : {}. New value is {}", dataDir, updatedValue);
+          endOffsetOfLastMessage = fileSpan.getEndOffset();
+        }
+        logger.info("Store : {} ttl updated in the index ", dataDir);
+      }
+    } catch (StoreException e) {
+      throw e;
+    } catch (IOException e) {
+      throw new StoreException("IO error while trying to update ttl in store " + dataDir, e, StoreErrorCodes.IOError);
+    } catch (Exception e) {
+      throw new StoreException("Unknown error while trying to update ttl in store " + dataDir, e,
+          StoreErrorCodes.Unknown_Error);
+    }
+  }
+
+  @Override
   public FindInfo findEntriesSince(FindToken token, long maxTotalSizeOfEntries) throws StoreException {
     checkStarted();
     final Timer.Context context = metrics.findEntriesSinceResponse.time();

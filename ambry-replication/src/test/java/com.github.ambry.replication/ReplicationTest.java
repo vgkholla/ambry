@@ -982,6 +982,11 @@ public class ReplicationTest {
     }
 
     @Override
+    public void updateTtl(MessageWriteSet messageSetToUpdateTtls) throws StoreException {
+      throw new IllegalStateException("Not implemented");
+    }
+
+    @Override
     public FindInfo findEntriesSince(FindToken token, long maxSizeOfEntries) throws StoreException {
       // unused function
       MockFindToken mockToken = (MockFindToken) token;

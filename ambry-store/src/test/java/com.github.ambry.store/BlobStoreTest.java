@@ -281,6 +281,22 @@ public class BlobStoreTest {
     assertTrue(tempDir.getAbsolutePath() + " could not be deleted", StoreTestUtils.cleanDirectory(tempDir, true));
   }
 
+  @Test
+  public void updateTtlTest() throws StoreException {
+    for (MockId id : expiredKeys) {
+      StoreInfo storeInfo = store.get(Collections.singletonList(id), EnumSet.allOf(StoreGetOptions.class));
+      System.out.println("Before: " + storeInfo.getMessageReadSetInfo().get(0).getExpirationTimeInMs());
+      MessageInfo putMsgInfo = allKeys.get(id).getFirst();
+      MessageInfo info =
+          new MessageInfo(id, 1, Utils.Infinite_Time, putMsgInfo.getAccountId(), putMsgInfo.getContainerId(),
+              time.milliseconds());
+      ByteBuffer buffer = ByteBuffer.allocate(1);
+      store.updateTtl(new MockMessageWriteSet(Collections.singletonList(info), Collections.singletonList(buffer)));
+      storeInfo = store.get(Collections.singletonList(id), EnumSet.noneOf(StoreGetOptions.class));
+      System.out.println("After: " + storeInfo.getMessageReadSetInfo().get(0).getExpirationTimeInMs());
+    }
+  }
+
   /**
    * Tests blob store use of {@link WriteStatusDelegate}
    * @throws StoreException

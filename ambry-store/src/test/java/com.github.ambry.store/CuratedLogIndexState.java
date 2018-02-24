@@ -287,12 +287,11 @@ class CuratedLogIndexState {
       IndexValue value = getExpectedValue(idToDelete, true);
       newValue = new IndexValue(value.getSize(), value.getOffset(), value.getFlags(), value.getExpiresAtMs(),
           time.milliseconds(), value.getAccountId(), value.getContainerId());
-      newValue.setNewOffset(startOffset);
-      newValue.setNewSize(CuratedLogIndexState.DELETE_RECORD_SIZE);
+      newValue.setNewOffsetAndSize(startOffset, CuratedLogIndexState.DELETE_RECORD_SIZE);
     } else {
       newValue = new IndexValue(CuratedLogIndexState.DELETE_RECORD_SIZE, startOffset, Utils.Infinite_Time,
           info.getOperationTimeMs(), info.getAccountId(), info.getContainerId());
-      newValue.clearOriginalMessageOffset();
+      newValue.clearOriginalMessageDetails();
       indexSegmentStartOffsets.put(idToDelete, new Pair<Offset, Offset>(null, null));
       allKeys.put(idToDelete, new Pair<IndexValue, IndexValue>(null, null));
       forcePut = true;
@@ -956,7 +955,7 @@ class CuratedLogIndexState {
         if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
           // delete record is always valid
           validEntries.add(new IndexEntry(key, value));
-          if (value.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
+          if (value.getOriginalMessageOffset() != IndexValue.UNKNOWN_VALUE
               && value.getOriginalMessageOffset() != value.getOffset().getOffset()
               && value.getOriginalMessageOffset() >= indexSegmentStartOffset.getOffset() && !isDeletedAt(key,
               deleteReferenceTimeMs) && !isExpiredAt(key, expiryReferenceTimeMs)) {

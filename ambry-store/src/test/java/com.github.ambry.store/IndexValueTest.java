@@ -140,8 +140,7 @@ public class IndexValueTest {
     IndexValue newValue = new IndexValue(logSegmentName, value.getBytes(), version);
     // delete in the same log segment
     newValue.setFlag(IndexValue.Flags.Delete_Index);
-    newValue.setNewOffset(new Offset(logSegmentName, newOffset));
-    newValue.setNewSize(newSize);
+    newValue.setNewOffsetAndSize(new Offset(logSegmentName, newOffset), newSize);
     switch (version) {
       case PersistentIndex.VERSION_0:
         verifyIndexValue(newValue, logSegmentName, newSize, newOffset, true, expiresAtMs, oldOffset,
@@ -155,7 +154,7 @@ public class IndexValueTest {
     }
 
     // original message offset cleared
-    newValue.clearOriginalMessageOffset();
+    newValue.clearOriginalMessageDetails();
     switch (version) {
       case PersistentIndex.VERSION_0:
         verifyIndexValue(newValue, logSegmentName, newSize, newOffset, true, expiresAtMs, -1, Utils.Infinite_Time,
@@ -172,8 +171,7 @@ public class IndexValueTest {
     String newLogSegmentName = LogSegmentNameHelper.getNextPositionName(logSegmentName);
     // delete not in the same log segment
     newValue.setFlag(IndexValue.Flags.Delete_Index);
-    newValue.setNewOffset(new Offset(newLogSegmentName, newOffset));
-    newValue.setNewSize(newSize);
+    newValue.setNewOffsetAndSize(new Offset(newLogSegmentName, newOffset), newSize);
 
     switch (version) {
       case PersistentIndex.VERSION_0:

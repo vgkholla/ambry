@@ -450,7 +450,7 @@ class BlobStoreStats implements StoreStats, Closeable {
               indexValue.getOperationTimeInMs() == Utils.Infinite_Time ? indexSegment.getLastModifiedTimeMs()
                   : indexValue.getOperationTimeInMs();
           deletedKeys.put(indexEntry.getKey(), operationTimeInMs);
-          if (indexValue.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
+          if (indexValue.getOriginalMessageOffset() != IndexValue.UNKNOWN_VALUE
               && indexValue.getOriginalMessageOffset() != indexValue.getOffset().getOffset()
               && indexValue.getOriginalMessageOffset() >= indexSegment.getStartOffset().getOffset()
               && operationTimeInMs >= referenceTimeInMs) {
@@ -857,7 +857,7 @@ class BlobStoreStats implements StoreStats, Closeable {
               if (indexValue.getOriginalMessageOffset() == indexValue.getOffset().getOffset()) {
                 // delete record with no put record due to compaction and legacy bugs
                 originalPut = null;
-              } else if (indexValue.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
+              } else if (indexValue.getOriginalMessageOffset() != IndexValue.UNKNOWN_VALUE
                   && indexValue.getOriginalMessageOffset() >= indexSegment.getStartOffset().getOffset()) {
                 // delete and put are in the same index segment
                 originalPut = getPutRecordForDeletedKey(entry.getKey(), indexValue);

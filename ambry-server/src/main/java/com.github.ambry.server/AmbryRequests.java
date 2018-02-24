@@ -58,6 +58,8 @@ import com.github.ambry.protocol.ReplicaMetadataResponseInfo;
 import com.github.ambry.protocol.ReplicationControlAdminRequest;
 import com.github.ambry.protocol.RequestControlAdminRequest;
 import com.github.ambry.protocol.RequestOrResponseType;
+import com.github.ambry.protocol.TTLRequest;
+import com.github.ambry.protocol.TTLResponse;
 import com.github.ambry.replication.ReplicationManager;
 import com.github.ambry.store.FindInfo;
 import com.github.ambry.store.FindToken;
@@ -70,10 +72,12 @@ import com.github.ambry.store.StoreException;
 import com.github.ambry.store.StoreGetOptions;
 import com.github.ambry.store.StoreInfo;
 import com.github.ambry.store.StoreKeyFactory;
+import com.github.ambry.utils.ByteBufferInputStream;
 import com.github.ambry.utils.SystemTime;
 import com.github.ambry.utils.Utils;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -150,6 +154,9 @@ public class AmbryRequests implements RequestAPI {
           break;
         case DeleteRequest:
           handleDeleteRequest(request);
+          break;
+        case TTLRequest:
+          handleTtlRequest(request);
           break;
         case ReplicaMetadataRequest:
           handleReplicaMetadataRequest(request);
@@ -443,6 +450,61 @@ public class AmbryRequests implements RequestAPI {
     requestResponseChannel.sendResponse(response, request,
         new ServerNetworkResponseMetrics(metrics.deleteBlobResponseQueueTimeInMs, metrics.deleteBlobSendTimeInMs,
             metrics.deleteBlobTotalTimeInMs, null, null, totalTimeSpent));
+  }
+
+  public void handleTtlRequest(Request request) throws IOException, InterruptedException {
+    TTLRequest ttlRequest = TTLRequest.readFrom(new DataInputStream(request.getInputStream()), clusterMap);
+    TTLResponse response = null;
+    try {
+      ServerErrorCode error = validateRequest(ttlRequest.getBlobId().getPartition(), RequestOrResponseType.TTLRequest);
+      if (error != ServerErrorCode.No_Error) {
+        logger.error("Validating ttl request failed with error {} for request {}", error, ttlRequest);
+        response = new TTLResponse(ttlRequest.getCorrelationId(), ttlRequest.getClientId(), error);
+      } else {
+        ByteBufferInputStream stream = new ByteBufferInputStream(ByteBuffer.allocate(1));
+        MessageInfo info =
+            new MessageInfo(ttlRequest.getBlobId(), 1, ttlRequest.getExpiresAtMs(), ttlRequest.getAccountId(),
+                ttlRequest.getContainerId(), ttlRequest.getOperationTimeInMs());
+        List<MessageInfo> infoList = new ArrayList<MessageInfo>();
+        infoList.add(info);
+        MessageFormatWriteSet writeset = new MessageFormatWriteSet(stream, infoList, false);
+        Store storeToDelete = storageManager.getStore(ttlRequest.getBlobId().getPartition());
+        storeToDelete.updateTtl(writeset);
+        response =
+            new TTLResponse(ttlRequest.getCorrelationId(), ttlRequest.getClientId(), ServerErrorCode.No_Error);
+      }
+    } catch (StoreException e) {
+      boolean logInErrorLevel = false;
+      if (e.getErrorCode() == StoreErrorCodes.ID_Not_Found) {
+        metrics.idNotFoundError.inc();
+      } else if (e.getErrorCode() == StoreErrorCodes.ID_Deleted) {
+        metrics.idDeletedError.inc();
+      } else if (e.getErrorCode() == StoreErrorCodes.Authorization_Failure) {
+        metrics.deleteAuthorizationFailure.inc();
+      } else {
+        logInErrorLevel = true;
+        metrics.unExpectedStoreDeleteError.inc();
+      }
+      if (logInErrorLevel) {
+        logger.error("Store exception on a ttl update with error code {} for request {}", e.getErrorCode(), ttlRequest,
+            e);
+      } else {
+        logger.trace("Store exception on a ttl update with error code {} for request {}", e.getErrorCode(), ttlRequest,
+            e);
+      }
+      response = new TTLResponse(ttlRequest.getCorrelationId(), ttlRequest.getClientId(),
+          ErrorMapping.getStoreErrorMapping(e.getErrorCode()));
+    } catch (Exception e) {
+      logger.error("Unknown exception for delete request " + ttlRequest, e);
+      response = new TTLResponse(ttlRequest.getCorrelationId(), ttlRequest.getClientId(),
+          ServerErrorCode.Unknown_Error);
+      metrics.unExpectedStoreDeleteError.inc();
+    } finally {
+      publicAccessLogger.info("{} {} processingTime {}", ttlRequest, response, 1);
+    }
+    requestResponseChannel.sendResponse(response, request,
+        new ServerNetworkResponseMetrics(metrics.deleteBlobResponseQueueTimeInMs, metrics.deleteBlobSendTimeInMs,
+            metrics.deleteBlobTotalTimeInMs, null, null, 1));
   }
 
   public void handleReplicaMetadataRequest(Request request) throws IOException, InterruptedException {

@@ -179,7 +179,7 @@ public class StoreConfig {
    * the total entry size is still N bytes, the key size change will not cause the active index segment to roll over.
    */
   @Config("store.index.persisted.entry.min.bytes")
-  @Default("115")
+  @Default("123")
   public final int storeIndexPersistedEntryMinBytes;
 
   /**
@@ -252,7 +252,7 @@ public class StoreConfig {
         verifiableProperties.getLongInRange("store.stats.wait.timeout.in.secs", 2 * 60, 0, 30 * 60);
     storeStatsIndexEntriesPerSecond =
         verifiableProperties.getIntInRange("store.stats.index.entries.per.second", 240000, 1, Integer.MAX_VALUE);
-    storeIndexPersistedEntryMinBytes = verifiableProperties.getInt("store.index.persisted.entry.min.bytes", 115);
+    storeIndexPersistedEntryMinBytes = verifiableProperties.getInt("store.index.persisted.entry.min.bytes", 123);
     storeWriteStatusDelegateEnable = verifiableProperties.getBoolean(storeWriteStatusDelegateEnableName, false);
     storeReadOnlyEnableSizeThresholdPercentage =
         verifiableProperties.getIntInRange(storeReadOnlyEnableSizeThresholdPercentageName, 95, 0, 100);

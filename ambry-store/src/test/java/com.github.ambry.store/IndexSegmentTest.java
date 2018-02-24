@@ -552,8 +552,7 @@ public class IndexSegmentTest {
       }
       IndexValue newValue = IndexValueTest.getIndexValue(value, version);
       newValue.setFlag(IndexValue.Flags.Delete_Index);
-      newValue.setNewOffset(offset);
-      newValue.setNewSize(DELETE_FILE_SPAN_SIZE);
+      newValue.setNewOffsetAndSize(offset, DELETE_FILE_SPAN_SIZE);
       segment.addEntry(new IndexEntry(id, newValue),
           new Offset(offset.getName(), offset.getOffset() + DELETE_FILE_SPAN_SIZE));
       referenceIndex.put(id, newValue);

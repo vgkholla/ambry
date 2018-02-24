@@ -42,16 +42,17 @@ import static com.github.ambry.account.Container.*;
  */
 class IndexValue {
   enum Flags {
-    Delete_Index
+    Delete_Index, TTL_Update_Index
   }
 
   final static byte FLAGS_DEFAULT_VALUE = (byte) 0;
-  final static long UNKNOWN_ORIGINAL_MESSAGE_OFFSET = -1;
+  final static long UNKNOWN_VALUE = -1;
 
   private final static int BLOB_SIZE_IN_BYTES = 8;
   private final static int OFFSET_SIZE_IN_BYTES = 8;
   private final static int FLAG_SIZE_IN_BYTES = 1;
   private final static int EXPIRES_AT_MS_SIZE_IN_BYTES_V0 = 8;
+  private final static int ORIGINAL_MESSAGE_SIZE_SIZE_IN_BYTES = 8;
   private final static int ORIGINAL_MESSAGE_OFFSET_SIZE_IN_BYTES = 8;
 
   private final static int EXPIRES_AT_SECS_SIZE_IN_BYTES_V1 = 4;
@@ -65,13 +66,15 @@ class IndexValue {
 
   final static int INDEX_VALUE_SIZE_IN_BYTES_V1 =
       BLOB_SIZE_IN_BYTES + OFFSET_SIZE_IN_BYTES + FLAG_SIZE_IN_BYTES + EXPIRES_AT_SECS_SIZE_IN_BYTES_V1
-          + ORIGINAL_MESSAGE_OFFSET_SIZE_IN_BYTES + OPERATION_TIME_SECS_SIZE_IN_BYTES + ACCOUNT_ID_SIZE_IN_BYTES
-          + CONTAINER_ID_SIZE_IN_BYTES;
+          + ORIGINAL_MESSAGE_SIZE_SIZE_IN_BYTES + ORIGINAL_MESSAGE_OFFSET_SIZE_IN_BYTES
+          + OPERATION_TIME_SECS_SIZE_IN_BYTES + ACCOUNT_ID_SIZE_IN_BYTES + CONTAINER_ID_SIZE_IN_BYTES;
 
   private long size;
   private Offset offset;
   private byte flags;
-  private final long expiresAtMs;
+  private long expiresAtMs;
+  // TODO: you could argue that this unnecessarily bloats our index sizes - there are alternates to this
+  private long originalMessageSize;
   private long originalMessageOffset;
   private final long operationTimeInMs;
   private final short accountId;
@@ -110,6 +113,7 @@ class IndexValue {
         flags = value.get();
         long expiresAt = value.getInt();
         expiresAtMs = expiresAt >= 0 ? TimeUnit.SECONDS.toMillis(expiresAt) : Utils.Infinite_Time;
+        originalMessageSize = value.getLong();
         originalMessageOffset = value.getLong();
         long operationTimeInSecs = value.getInt();
         operationTimeInMs = operationTimeInSecs != Utils.Infinite_Time ? TimeUnit.SECONDS.toMillis(operationTimeInSecs)
@@ -157,7 +161,7 @@ class IndexValue {
    * @param flags the flags that needs to be set for the Index Value
    * @param expiresAtMs the expiration time in ms at which the blob expires
    * @param originalMessageOffset the original message offset where the Put record pertaining to a delete record exists
-   *                              in the same log segment. Set to {@link #UNKNOWN_ORIGINAL_MESSAGE_OFFSET} otherwise.
+   *                              in the same log segment. Set to {@link #UNKNOWN_VALUE} otherwise.
    * @param operationTimeInMs the time in ms at which the operation occurred.
    * @param accountId the accountId that this blob belongs to
    * @param containerId the containerId that this blob belongs to
@@ -173,6 +177,7 @@ class IndexValue {
     } else {
       this.expiresAtMs = Utils.getTimeInMsToTheNearestSec(expiresAtMs);
     }
+    this.originalMessageSize = size;
     this.originalMessageOffset = originalMessageOffset;
     this.operationTimeInMs = Utils.getTimeInMsToTheNearestSec(operationTimeInMs);
     this.accountId = accountId;
@@ -218,6 +223,13 @@ class IndexValue {
   }
 
   /**
+   * @return the original message size of the {@link IndexValue}
+   */
+  long getOriginalMessageSize() {
+    return originalMessageSize;
+  }
+
+  /**
    * @return the original message offset of the {@link IndexValue}
    */
   long getOriginalMessageOffset() {
@@ -257,22 +269,24 @@ class IndexValue {
    * Updates the {@link Offset} of the {@link IndexValue}
    * @param newOffset the new {@link Offset} to be updated for the {@link IndexValue}
    */
-  void setNewOffset(Offset newOffset) {
-    originalMessageOffset =
-        offset.getName().equals(newOffset.getName()) ? offset.getOffset() : UNKNOWN_ORIGINAL_MESSAGE_OFFSET;
+  void setNewOffsetAndSize(Offset newOffset, long newSize) {
+    if (offset.getName().equals(newOffset.getName())) {
+      originalMessageOffset = offset.getOffset();
+      originalMessageSize = newSize;
+    } else {
+      clearOriginalMessageDetails();
+    }
     offset = newOffset;
+    size = newSize;
   }
 
-  void clearOriginalMessageOffset() {
-    originalMessageOffset = UNKNOWN_ORIGINAL_MESSAGE_OFFSET;
+  void clearOriginalMessageDetails() {
+    originalMessageOffset = UNKNOWN_VALUE;
+    originalMessageSize = UNKNOWN_VALUE;
   }
 
-  /**
-   * Sets the size of the {@link IndexValue}
-   * @param size the size that needs to be set for the {@link IndexValue}
-   */
-  void setNewSize(long size) {
-    this.size = size;
+  void updateTtl(long expiresAtMs) {
+    this.expiresAtMs = expiresAtMs;
   }
 
   /**
@@ -297,6 +311,7 @@ class IndexValue {
         value.putLong(offset.getOffset());
         value.put(flags);
         value.putInt(expiresAtMs != Utils.Infinite_Time ? (int) (expiresAtMs / Time.MsPerSec) : (int) expiresAtMs);
+        value.putLong(originalMessageSize);
         value.putLong(originalMessageOffset);
         value.putInt(operationTimeInMs != Utils.Infinite_Time ? (int) (operationTimeInMs / Time.MsPerSec)
             : (int) operationTimeInMs);

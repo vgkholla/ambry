@@ -214,6 +214,16 @@ public class InMemoryRouter implements Router {
   }
 
   @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs, Callback<Void> callback) {
+    return null;
+  }
+
+  @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs) {
+    return null;
+  }
+
+  @Override
   public Future<Void> deleteBlob(String blobId, String serviceId, Callback<Void> callback) {
     FutureResult<Void> futureResult = new FutureResult<>();
     handlePrechecks(futureResult, callback);

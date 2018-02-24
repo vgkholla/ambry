@@ -248,10 +248,24 @@ class AmbryBlobStorageService implements BlobStorageService {
   @Override
   public void handlePut(RestRequest restRequest, RestResponseChannel restResponseChannel) {
     handlePrechecks(restRequest, restResponseChannel);
-    Exception exception =
-        isUp ? new RestServiceException("PUT is not supported", RestServiceErrorCode.UnsupportedHttpMethod)
-            : new RestServiceException("AmbryBlobStorageService unavailable", RestServiceErrorCode.ServiceUnavailable);
-    submitResponse(restRequest, restResponseChannel, null, exception);
+    Exception exception = null;
+    try {
+      logger.trace("Handling TTL update request - {}", restRequest.getUri());
+      checkAvailable();
+      String receivedId = RestUtils.getOperationOrBlobIdFromUri(restRequest, RestUtils.getBlobSubResource(restRequest),
+          frontendConfig.frontendPathPrefixesToRemove);
+      receivedId = idConverter.convert(restRequest, receivedId, null).get();
+      long expiresAtMs = Long.parseLong(RestUtils.getHeader(restRequest.getArgs(), "x-ambry-expires-at-ms", true));
+      String serviceId = RestUtils.getHeader(restRequest.getArgs(), Headers.SERVICE_ID, true);
+      router.updateTtl(receivedId, serviceId, expiresAtMs).get();
+      restResponseChannel.setStatus(ResponseStatus.Accepted);
+      restResponseChannel.setHeader(RestUtils.Headers.DATE, new GregorianCalendar().getTime());
+      restResponseChannel.setHeader(Headers.CONTENT_LENGTH, 0);
+    } catch (Exception e) {
+      exception = e;
+    } finally {
+      submitResponse(restRequest, restResponseChannel, null, extractExecutionExceptionCause(exception));
+    }
   }
 
   @Override
@@ -444,6 +458,9 @@ class AmbryBlobStorageService implements BlobStorageService {
    *         retun the exception itself. Otherwise, return the cause {@link Exception}.
    */
   private static Exception extractExecutionExceptionCause(Exception e) {
+    if (e == null) {
+      return null;
+    }
     if (!(e instanceof ExecutionException)) {
       return e;
     }

@@ -759,6 +759,11 @@ public class AmbryRequestsTest {
       }
 
       @Override
+      public void updateTtl(MessageWriteSet messageSetToUpdateTtls) throws StoreException {
+
+      }
+
+      @Override
       public FindInfo findEntriesSince(FindToken token, long maxTotalSizeOfEntries) throws StoreException {
         operationReceived = RequestOrResponseType.ReplicaMetadataRequest;
         return new FindInfo(Collections.EMPTY_LIST, FIND_TOKEN_FACTORY.getNewFindToken());

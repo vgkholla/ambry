@@ -239,6 +239,31 @@ class NonBlockingRouter implements Router {
     return deleteBlob(blobId, serviceId, null);
   }
 
+  @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs, Callback<Void> callback) {
+    if (blobId == null) {
+      throw new IllegalArgumentException("blobId must not be null");
+    } else if (expiresAtMs != Utils.Infinite_Time && expiresAtMs < 0) {
+      throw new IllegalArgumentException("expiresAtMs must be Infinite time or > 0");
+    } currentOperationsCount.incrementAndGet();
+    routerMetrics.operationQueuingRate.mark();
+    FutureResult<Void> futureResult = new FutureResult<>();
+    if (isOpen.get()) {
+      getOperationController().updateTtl(blobId, serviceId, expiresAtMs, futureResult, callback);
+    } else {
+      RouterException routerException =
+          new RouterException("Cannot accept operation because Router is closed", RouterErrorCode.RouterClosed);
+      routerMetrics.operationDequeuingRate.mark();
+      completeOperation(futureResult, callback, null, routerException);
+    }
+    return futureResult;
+  }
+
+  @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs) {
+    return updateTtl(blobId, serviceId, expiresAtMs, null);
+  }
+
   /**
    * Requests for a blob to be deleted asynchronously and invokes the {@link Callback} when the request completes.
    * @param blobId The ID of the blob that needs to be deleted.
@@ -471,6 +496,7 @@ class NonBlockingRouter implements Router {
     final PutManager putManager;
     final GetManager getManager;
     final DeleteManager deleteManager;
+    final TTLUpdateManager ttlUpdateManager;
     private final NetworkClient networkClient;
     private final Thread requestResponseHandlerThread;
     private final CountDownLatch shutDownLatch = new CountDownLatch(1);
@@ -493,6 +519,9 @@ class NonBlockingRouter implements Router {
               cryptoJobHandler, time);
       deleteManager = new DeleteManager(clusterMap, responseHandler, notificationSystem, routerConfig, routerMetrics,
           routerCallback, time);
+      ttlUpdateManager =
+          new TTLUpdateManager(clusterMap, responseHandler, notificationSystem, routerConfig, routerMetrics,
+              routerCallback, time);
       requestResponseHandlerThread = Utils.newThread("RequestResponseHandlerThread-" + suffix, this, true);
       requestResponseHandlerThread.start();
       routerMetrics.initializeOperationControllerMetrics(requestResponseHandlerThread);
@@ -565,6 +594,18 @@ class NonBlockingRouter implements Router {
       routerCallback.onPollReady();
     }
 
+    protected void updateTtl(final String blobIdStr, final String serviceId, long expiresAtMs,
+        FutureResult<Void> futureResult, final Callback<Void> callback) {
+      try {
+        final BlobId blobId = RouterUtils.getBlobIdFromString(blobIdStr, clusterMap);
+        ttlUpdateManager.submitTtlUpdateOperation(blobId, serviceId, expiresAtMs, futureResult, callback);
+      } catch (RouterException e) {
+        routerMetrics.operationDequeuingRate.mark();
+        NonBlockingRouter.completeOperation(futureResult, callback, null, e);
+      }
+      routerCallback.onPollReady();
+    }
+
     /**
      * Shuts down the OperationController and cleans up all the resources associated with it.
      */
@@ -581,6 +622,7 @@ class NonBlockingRouter implements Router {
       putManager.close();
       getManager.close();
       deleteManager.close();
+      ttlUpdateManager.close();
     }
 
     /**
@@ -592,6 +634,7 @@ class NonBlockingRouter implements Router {
       try {
         putManager.poll(requests);
         getManager.poll(requests);
+        ttlUpdateManager.poll(requests);
         initiateBackgroundDeletes(backgroundDeleteRequests);
         backgroundDeleteRequests.clear();
         deleteManager.poll(requests);
@@ -620,6 +663,9 @@ class NonBlockingRouter implements Router {
               break;
             case DeleteRequest:
               deleteManager.handleResponse(responseInfo);
+              break;
+            case TTLRequest:
+              ttlUpdateManager.handleResponse(responseInfo);
               break;
             default:
               logger.error("Unexpected response type: " + type + " received, discarding");
@@ -684,6 +730,7 @@ class NonBlockingRouter implements Router {
     BackgroundDeleter() throws IOException {
       super("backgroundDeleter");
       putManager.close();
+      ttlUpdateManager.close();
     }
 
     /**

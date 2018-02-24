@@ -18,7 +18,7 @@ package com.github.ambry.protocol;
  * new entries to the end of the list.
  */
 public enum RequestOrResponseType {
-  PutRequest, PutResponse, GetRequest, GetResponse, DeleteRequest, DeleteResponse, TTLRequest, // Unsupported
-  TTLResponse, // Unsupported
+  PutRequest, PutResponse, GetRequest, GetResponse, DeleteRequest, DeleteResponse, TTLRequest,
+  TTLResponse,
   ReplicaMetadataRequest, ReplicaMetadataResponse, AdminRequest, AdminResponse
 }

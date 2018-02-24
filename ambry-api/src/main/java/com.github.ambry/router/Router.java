@@ -78,6 +78,10 @@ public interface Router extends Closeable {
    */
   public Future<Void> deleteBlob(String blobId, String serviceId);
 
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs, Callback<Void> callback);
+
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs);
+
   /**
    * Requests for a blob to be deleted asynchronously and invokes the {@link Callback} when the request completes.
    * @param blobId The ID of the blob that needs to be deleted.

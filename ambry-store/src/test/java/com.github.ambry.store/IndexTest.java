@@ -27,6 +27,7 @@ import com.github.ambry.utils.UtilsTest;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -97,6 +98,22 @@ public class IndexTest {
   public void cleanup() throws InterruptedException, IOException, StoreException {
     state.destroy();
     assertTrue(tempDir.getAbsolutePath() + " could not be deleted", StoreTestUtils.cleanDirectory(tempDir, true));
+  }
+
+  @Test
+  public void updateTtlTest() throws Exception {
+    for (MockId id : state.expiredKeys) {
+      state.log.appendFrom(ByteBuffer.allocate(1));
+      FileSpan fileSpan = state.log.getFileSpanForMessage(state.index.getCurrentEndOffset(), 1);
+      System.out.println("Before: " + state.index.getBlobReadInfo(id, EnumSet.allOf(StoreGetOptions.class))
+          .getMessageInfo()
+          .getExpirationTimeInMs());
+      IndexValue value = state.index.updateTtl(id, fileSpan, -1, state.time.milliseconds());
+      System.out.println("Return: " + value.getExpiresAtMs());
+      System.out.println("After: " + state.index.getBlobReadInfo(id, EnumSet.noneOf(StoreGetOptions.class))
+          .getMessageInfo()
+          .getExpirationTimeInMs());
+    }
   }
 
   /**
@@ -1027,7 +1044,7 @@ public class IndexTest {
   @Test
   public void testIndexSegmentRollOverKeySizeAndValueSizeChange() throws StoreException, IOException {
     state.closeAndClearIndex();
-    int persistedEntryMinBytes = 100;
+    int persistedEntryMinBytes = 108;
     state.properties.put("store.index.persisted.entry.min.bytes", Long.toString(persistedEntryMinBytes));
     state.properties.put("store.index.max.number.of.inmem.elements", Integer.toString(10));
     StoreConfig config = new StoreConfig(new VerifiableProperties(state.properties));

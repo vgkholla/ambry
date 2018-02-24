@@ -167,6 +167,16 @@ class PerfRouter implements Router {
     return deleteBlob(blobId, serviceId, null);
   }
 
+  @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs, Callback<Void> callback) {
+    return null;
+  }
+
+  @Override
+  public Future<Void> updateTtl(String blobId, String serviceId, long expiresAtMs) {
+    return null;
+  }
+
   /**
    * Does nothing. Simply indicates success immediately.
    * @param blobId (ignored).

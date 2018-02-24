@@ -565,7 +565,7 @@ public class BlobStoreCompactorTest {
         CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, logSegmentStartOffset);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(1), delExpPutSameIdxSegId, currentExpectedOffset,
-        CuratedLogIndexState.DELETE_RECORD_SIZE, 0, true, IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET);
+        CuratedLogIndexState.DELETE_RECORD_SIZE, 0, true, IndexValue.UNKNOWN_VALUE);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(2), willExpPut, currentExpectedOffset, CuratedLogIndexState.PUT_RECORD_SIZE,
         expiryTimeMs, false, currentExpectedOffset);
@@ -593,7 +593,7 @@ public class BlobStoreCompactorTest {
         Utils.Infinite_Time, true, willBeDelOffset);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(2), idFromAnotherSegment, currentExpectedOffset,
-        CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET);
+        CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, IndexValue.UNKNOWN_VALUE);
 
     // no clean shutdown file should exist
     assertFalse("Clean shutdown file not deleted",
@@ -847,7 +847,7 @@ public class BlobStoreCompactorTest {
       // the delete record should remain
       assertTrue(id + " should be deleted", value.isFlagSet(IndexValue.Flags.Delete_Index));
       // the put record should be cleaned up
-      assertEquals("There should no original message offset", IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET,
+      assertEquals("There should no original message offset", IndexValue.UNKNOWN_VALUE,
           value.getOriginalMessageOffset());
       try {
         state.index.getBlobReadInfo(id, EnumSet.allOf(StoreGetOptions.class));
@@ -865,7 +865,7 @@ public class BlobStoreCompactorTest {
       // the delete record should remain
       assertTrue(id + " should be deleted", value.isFlagSet(IndexValue.Flags.Delete_Index));
       // the put record however should not be cleaned up
-      if (value.getOriginalMessageOffset() == IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET) {
+      if (value.getOriginalMessageOffset() == IndexValue.UNKNOWN_VALUE) {
         // PUT record should exist
         try (BlobReadOptions options = state.index.getBlobReadInfo(id, EnumSet.allOf(StoreGetOptions.class))) {
           checkRecord(id, options);
@@ -892,7 +892,7 @@ public class BlobStoreCompactorTest {
     state.addDeleteEntry(orphanedId);
     // get the index value and "lose" the PUT record. This works because we get a reference to the value in the index.
     IndexValue value = state.index.findKey(orphanedId);
-    value.clearOriginalMessageOffset();
+    value.clearOriginalMessageDetails();
     // add a put entry that spans the rest of the log segment
     long lastRecSize = state.log.getSegmentCapacity() - state.index.getCurrentEndOffset().getOffset();
     state.addPutEntries(1, lastRecSize, Utils.Infinite_Time);

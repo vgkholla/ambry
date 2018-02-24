@@ -306,6 +306,11 @@ public class StatsManagerTest {
     }
 
     @Override
+    public void updateTtl(MessageWriteSet messageSetToUpdateTtls) throws StoreException {
+      throw new IllegalStateException("Not implemented");
+    }
+
+    @Override
     public FindInfo findEntriesSince(FindToken token, long maxTotalSizeOfEntries) throws StoreException {
       throw new IllegalStateException("Not implemented");
     }

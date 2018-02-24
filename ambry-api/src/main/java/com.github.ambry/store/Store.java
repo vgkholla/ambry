@@ -52,6 +52,8 @@ public interface Store {
    */
   void delete(MessageWriteSet messageSetToDelete) throws StoreException;
 
+  void updateTtl(MessageWriteSet messageSetToUpdateTtls) throws StoreException;
+
   /**
    * Finds all the entries from the store given a find token
    * @param token The token that acts as a bookmark to make subsequent searches

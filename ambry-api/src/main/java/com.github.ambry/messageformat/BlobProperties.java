@@ -27,7 +27,7 @@ public class BlobProperties {
   private final String ownerId;
   private final String contentType;
   private final boolean isPrivate;
-  private final long timeToLiveInSeconds;
+  public long timeToLiveInSeconds;
   private final long creationTimeInMs;
   private final short accountId;
   private final short containerId;

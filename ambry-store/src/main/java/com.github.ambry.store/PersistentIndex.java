@@ -52,7 +52,7 @@ class PersistentIndex {
    * Represents the different types of index entries.
    */
   enum IndexEntryType {
-    ANY, PUT, DELETE,
+    DEPRECATED_ANY, PUT, DELETE, TTL_UPDATE
   }
 
   static final short VERSION_0 = 0;
@@ -508,7 +508,7 @@ class PersistentIndex {
    * @throws StoreException
    */
   IndexValue findKey(StoreKey key, FileSpan fileSpan) throws StoreException {
-    return findKey(key, fileSpan, IndexEntryType.ANY, validIndexSegments);
+    return findKey(key, fileSpan, EnumSet.of(IndexEntryType.PUT, IndexEntryType.DELETE), validIndexSegments);
   }
 
   /**
@@ -516,13 +516,13 @@ class PersistentIndex {
    * within the given {@code fileSpan}.
    * @param key the {@link StoreKey} whose {@link IndexValue} is required.
    * @param fileSpan {@link FileSpan} which specifies the range within which search should be made
-   * @param type the {@link IndexEntryType} desired.
+   * @param anyOfTypes the type of {@link IndexEntry} desired. The first one found is returned.
    * @param indexSegments the map of index segment start {@link Offset} to {@link IndexSegment} instances
    * @return The associated {@link IndexValue} of the type {@code type} if it exists within the {@code fileSpan},
    * {@code null} otherwise.
    * @throws StoreException
    */
-  private IndexValue findKey(StoreKey key, FileSpan fileSpan, IndexEntryType type,
+  private IndexValue findKey(StoreKey key, FileSpan fileSpan, EnumSet<IndexEntryType> anyOfTypes,
       ConcurrentSkipListMap<Offset, IndexSegment> indexSegments) throws StoreException {
     IndexValue retValue = null;
     final Timer.Context context = metrics.findTime.time();
@@ -540,6 +540,8 @@ class PersistentIndex {
         metrics.segmentSizeForExists.update(segmentsMapToSearch.size());
       }
       int segmentsSearched = 0;
+      long effectiveExpiresAtMs = Long.MIN_VALUE;
+      IndexValue earliestTtlUpdateValue = null;
       for (Map.Entry<Offset, IndexSegment> entry : segmentsMapToSearch.entrySet()) {
         segmentsSearched++;
         logger.trace("Index : {} searching index with start offset {}", dataDir, entry.getKey());
@@ -547,17 +549,39 @@ class PersistentIndex {
         if (value != null) {
           logger.trace("Index : {} found value offset {} size {} ttl {}", dataDir, value.getOffset(), value.getSize(),
               value.getExpiresAtMs());
-          if (type.equals(IndexEntryType.ANY)) {
+          if (anyOfTypes.contains(IndexEntryType.DELETE) && value.isFlagSet(IndexValue.Flags.Delete_Index)) {
             retValue = value;
             break;
-          } else if (type.equals(IndexEntryType.DELETE) && value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+          } else if (value.isFlagSet(IndexValue.Flags.TTL_Update_Index)) {
+            earliestTtlUpdateValue = value;
+            if (effectiveExpiresAtMs != Utils.Infinite_Time) {
+              effectiveExpiresAtMs = value.getExpiresAtMs() == Utils.Infinite_Time ? Utils.Infinite_Time
+                  : Math.max(effectiveExpiresAtMs, value.getExpiresAtMs());
+            }
+            if (anyOfTypes.contains(IndexEntryType.TTL_UPDATE)) {
+              retValue = value;
+              break;
+            }
+          } else if (anyOfTypes.contains(IndexEntryType.PUT) && !value.isFlagSet(IndexValue.Flags.Delete_Index)
+              && !value.isFlagSet(IndexValue.Flags.TTL_Update_Index)) {
+            // we found an actual PUT record. We need to reconcile with any TTL updates found
             retValue = value;
-            break;
-          } else if (type.equals(IndexEntryType.PUT) && !value.isFlagSet(IndexValue.Flags.Delete_Index)) {
-            retValue = value;
+            if (effectiveExpiresAtMs != Long.MIN_VALUE) {
+              retValue.updateTtl(effectiveExpiresAtMs);
+            }
             break;
           }
         }
+      }
+      if (retValue == null && earliestTtlUpdateValue != null) {
+        // we don't have a PUT record. The earliestTtlUpdateValue has overwritten it
+        // we will recreate it here.
+        // TODO: need to fix operation time
+        Offset offset =
+            new Offset(earliestTtlUpdateValue.getOffset().getName(), earliestTtlUpdateValue.getOriginalMessageOffset());
+        retValue = new IndexValue(earliestTtlUpdateValue.getOriginalMessageSize(), offset, effectiveExpiresAtMs,
+            earliestTtlUpdateValue.getOperationTimeInMs(), earliestTtlUpdateValue.getAccountId(),
+            earliestTtlUpdateValue.getContainerId());
       }
       metrics.segmentsAccessedPerBlobCount.update(segmentsSearched);
     } finally {
@@ -578,6 +602,33 @@ class PersistentIndex {
   boolean wasRecentlySeen(MessageInfo info) {
     Long crcInJournal = journal.getCrcOfKey(info.getStoreKey());
     return info.getCrc() != null && info.getCrc().equals(crcInJournal);
+  }
+
+  IndexValue updateTtl(StoreKey id, FileSpan fileSpan, long updatedExpiresAtMs, long operationTimeMs)
+      throws StoreException {
+    validateFileSpan(fileSpan, true);
+    IndexValue value = findKey(id);
+    if (value == null) {
+      throw new StoreException("Id " + id + " not present in index " + dataDir, StoreErrorCodes.ID_Not_Found);
+    } else if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+      throw new StoreException("Id " + id + " already deleted in index " + dataDir, StoreErrorCodes.ID_Deleted);
+    }
+    long size = fileSpan.getEndOffset().getOffset() - fileSpan.getStartOffset().getOffset();
+    long expiresAtMs = value.getExpiresAtMs();
+    if (expiresAtMs != Utils.Infinite_Time) {
+      if (updatedExpiresAtMs == Utils.Infinite_Time) {
+        expiresAtMs = updatedExpiresAtMs;
+      } else {
+        expiresAtMs = Math.max(value.getExpiresAtMs(), updatedExpiresAtMs);
+      }
+    }
+    IndexValue newValue =
+        new IndexValue(value.getSize(), value.getOffset(), expiresAtMs, operationTimeMs, value.getAccountId(),
+            value.getContainerId());
+    newValue.setNewOffsetAndSize(fileSpan.getStartOffset(), value.getSize());
+    newValue.setFlag(IndexValue.Flags.TTL_Update_Index);
+    addToIndex(new IndexEntry(id, newValue, null), fileSpan);
+    return newValue;
   }
 
   /**
@@ -619,12 +670,11 @@ class PersistentIndex {
       newValue =
           new IndexValue(size, fileSpan.getStartOffset(), info.getExpirationTimeInMs(), info.getOperationTimeMs(),
               info.getAccountId(), info.getContainerId());
-      newValue.clearOriginalMessageOffset();
+      newValue.clearOriginalMessageDetails();
     } else {
       newValue = new IndexValue(value.getSize(), value.getOffset(), value.getExpiresAtMs(), deletionTimeMs,
           value.getAccountId(), value.getContainerId());
-      newValue.setNewOffset(fileSpan.getStartOffset());
-      newValue.setNewSize(size);
+      newValue.setNewOffsetAndSize(fileSpan.getStartOffset(), size);
     }
     newValue.setFlag(IndexValue.Flags.Delete_Index);
     addToIndex(new IndexEntry(id, newValue, null), fileSpan);
@@ -641,7 +691,7 @@ class PersistentIndex {
    */
   BlobReadOptions getBlobReadInfo(StoreKey id, EnumSet<StoreGetOptions> getOptions) throws StoreException {
     ConcurrentSkipListMap<Offset, IndexSegment> indexSegments = validIndexSegments;
-    IndexValue value = findKey(id, null, IndexEntryType.ANY, indexSegments);
+    IndexValue value = findKey(id, null, EnumSet.of(IndexEntryType.PUT, IndexEntryType.DELETE), indexSegments);
     BlobReadOptions readOptions;
     if (value == null) {
       throw new StoreException("Id " + id + " not present in index " + dataDir, StoreErrorCodes.ID_Not_Found);
@@ -674,10 +724,10 @@ class PersistentIndex {
     BlobReadOptions readOptions;
     try {
       IndexValue putValue =
-          findKey(key, new FileSpan(getStartOffset(indexSegments), value.getOffset()), IndexEntryType.PUT,
+          findKey(key, new FileSpan(getStartOffset(indexSegments), value.getOffset()), EnumSet.of(IndexEntryType.PUT),
               indexSegments);
       if (value.getOriginalMessageOffset() != value.getOffset().getOffset()
-          && value.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET) {
+          && value.getOriginalMessageOffset() != IndexValue.UNKNOWN_VALUE) {
         // PUT record in the same log segment.
         String logSegmentName = value.getOffset().getName();
         // The delete entry in the index might not contain the information about the size of the original blob. So we
@@ -795,7 +845,7 @@ class PersistentIndex {
           for (JournalEntry entry : entries) {
             IndexValue value =
                 findKey(entry.getKey(), new FileSpan(entry.getOffset(), getCurrentEndOffset(indexSegments)),
-                    IndexEntryType.ANY, indexSegments);
+                    EnumSet.of(IndexEntryType.PUT, IndexEntryType.DELETE), indexSegments);
             messageEntries.add(
                 new MessageInfo(entry.getKey(), value.getSize(), value.isFlagSet(IndexValue.Flags.Delete_Index),
                     value.getExpiresAtMs(), value.getAccountId(), value.getContainerId(),
@@ -1097,9 +1147,8 @@ class PersistentIndex {
             }
           }
           newTokenOffsetInJournal = entry.getOffset();
-          IndexValue value =
-              findKey(entry.getKey(), new FileSpan(entry.getOffset(), endOffsetOfSnapshot), IndexEntryType.ANY,
-                  indexSegments);
+          IndexValue value = findKey(entry.getKey(), new FileSpan(entry.getOffset(), endOffsetOfSnapshot),
+              EnumSet.of(IndexEntryType.PUT, IndexEntryType.DELETE), indexSegments);
           messageEntries.add(
               new MessageInfo(entry.getKey(), value.getSize(), value.isFlagSet(IndexValue.Flags.Delete_Index),
                   value.getExpiresAtMs(), value.getAccountId(), value.getContainerId(), value.getOperationTimeInMs()));
@@ -1353,7 +1402,7 @@ class PersistentIndex {
 
             IndexValue value =
                 findKey(entry.getKey(), new FileSpan(entry.getOffset(), getCurrentEndOffset(indexSegments)),
-                    IndexEntryType.ANY, indexSegments);
+                    EnumSet.of(IndexEntryType.PUT, IndexEntryType.DELETE), indexSegments);
             if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
               messageEntries.add(
                   new MessageInfo(entry.getKey(), value.getSize(), true, value.getExpiresAtMs(), value.getAccountId(),
