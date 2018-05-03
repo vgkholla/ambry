@@ -405,30 +405,46 @@ class IndexSegment {
    * Adds an entry into the segment. The operation works only if the segment is read/write
    * @param entry The entry that needs to be added to the segment.
    * @param fileEndOffset The file end offset that this entry represents.
+   * @return the {@link IndexValue} that was added.
    * @throws StoreException
    */
-  void addEntry(IndexEntry entry, Offset fileEndOffset) throws StoreException {
+  IndexValue addEntry(IndexEntry entry, Offset fileEndOffset) throws StoreException {
+    IndexValue toAdd = entry.getValue();
     try {
       rwLock.readLock().lock();
       if (mapped.get()) {
         throw new StoreException("IndexSegment : " + indexFile.getAbsolutePath() + " cannot add to a mapped index ",
             StoreErrorCodes.Illegal_Index_Operation);
       }
+      if (!toAdd.isFlagSet(IndexValue.Flags.Delete_Index) && toAdd.isFlagSet(IndexValue.Flags.Ttl_Update_Index) && index
+          .containsKey(entry.getKey())) {
+        // this index segment contains a PUT index entry for the same key
+        // so we update the flag and relative message offset for that value instead of overwriting it
+        IndexValue putValue = index.get(entry.getKey());
+        Offset relatedMessageOffset = toAdd.getOffset();
+        long expiresAtMs = toAdd.getExpiresAtMs();
+        toAdd = new IndexValue(putValue.getOffset().getName(), putValue.getBytes(), getVersion());
+        toAdd.setFlag(IndexValue.Flags.Ttl_Update_Index);
+        toAdd.setExpiresAtMs(expiresAtMs);
+        toAdd.setRelatedMessageOffset(relatedMessageOffset);
+      }
       logger.trace("IndexSegment {} inserting key - {} value - offset {} size {} ttl {} "
-              + "originalMessageOffset {} fileEndOffset {}", indexFile.getAbsolutePath(), entry.getKey(),
-          entry.getValue().getOffset(), entry.getValue().getSize(), entry.getValue().getExpiresAtMs(),
-          entry.getValue().getOriginalMessageOffset(), fileEndOffset);
-      if (index.put(entry.getKey(), entry.getValue()) == null) {
+              + "relatedMessageOffset {} fileEndOffset {}", indexFile.getAbsolutePath(), entry.getKey(), toAdd.getOffset(),
+          toAdd.getSize(), toAdd.getExpiresAtMs(), toAdd.getRelatedMessageOffset(), fileEndOffset);
+      if (index.put(entry.getKey(), toAdd) == null) {
         numberOfItems.incrementAndGet();
-        sizeWritten.addAndGet(entry.getKey().sizeInBytes() + entry.getValue().getBytes().capacity());
+        sizeWritten.addAndGet(entry.getKey().sizeInBytes() + toAdd.getBytes().capacity());
         bloomFilter.add(ByteBuffer.wrap(entry.getKey().toBytes()));
         if (resetKey == null) {
+          // even if it is TTL update entry, we set the "reset" key as the PUT record. Reset key is intended only to
+          // be a hint so this does not affect correctness.
           resetKey = new Pair<>(entry.getKey(),
-              entry.getValue().isFlagSet(IndexValue.Flags.Delete_Index) ? PersistentIndex.IndexEntryType.DELETE
+              toAdd.isFlagSet(IndexValue.Flags.Delete_Index) ? PersistentIndex.IndexEntryType.DELETE
                   : PersistentIndex.IndexEntryType.PUT);
         }
       }
       endOffset.set(fileEndOffset);
+      // use the operation time from the input entry
       long operationTimeInMs = entry.getValue().getOperationTimeInMs();
       if (operationTimeInMs == Utils.Infinite_Time) {
         lastModifiedTimeSec.set(time.seconds());
@@ -436,7 +452,7 @@ class IndexSegment {
         lastModifiedTimeSec.set(operationTimeInMs / Time.MsPerSec);
       }
       if (valueSize == VALUE_SIZE_INVALID_VALUE) {
-        valueSize = entry.getValue().getBytes().capacity();
+        valueSize = toAdd.getBytes().capacity();
         logger.info("IndexSegment : {} setting value size to {} for index with start offset {}",
             indexFile.getAbsolutePath(), valueSize, startOffset);
       }
@@ -451,6 +467,7 @@ class IndexSegment {
     } finally {
       rwLock.readLock().unlock();
     }
+    return toAdd;
   }
 
   /**
@@ -606,7 +623,17 @@ class IndexSegment {
         for (Map.Entry<StoreKey, IndexValue> entry : index.entrySet()) {
           if (entry.getValue().getOffset().getOffset() + entry.getValue().getSize() <= safeEndPoint.getOffset()) {
             writer.write(entry.getKey().toBytes());
-            writer.write(entry.getValue().getBytes().array());
+            IndexValue value = entry.getValue();
+            if (value.getRelatedMessageOffset() >= safeEndPoint.getOffset()) {
+              // if the related message offset is greater than or equal the safe end point, then we clear it in the
+              // version that is written to disk
+              value = new IndexValue(value.getOffset().getName(), value.getBytes(), getVersion());
+              if (value.isFlagSet(IndexValue.Flags.Ttl_Update_Index)) {
+                value.clearFlag(IndexValue.Flags.Ttl_Update_Index);
+              }
+              value.setRelatedMessageOffset(value.getOffset());
+            }
+            writer.write(value.getBytes().array());
             if (getVersion() == PersistentIndex.VERSION_2) {
               // Add padding if necessary
               writer.write(maxPaddingBytes, 0, persistedEntrySize - (entry.getKey().sizeInBytes() + valueSize));
@@ -757,7 +784,6 @@ class IndexSegment {
       }
       firstKeyRelativeOffset = indexSizeExcludingEntries - CRC_FIELD_LENGTH;
       logger.trace("IndexSegment : {} reading log end offset {} from file", indexFile.getAbsolutePath(), logEndOffset);
-      long maxEndOffset = Long.MIN_VALUE;
       byte[] padding = new byte[persistedEntrySize - valueSize];
       while (stream.available() > CRC_FIELD_LENGTH) {
         StoreKey key = factory.getStoreKey(stream);
@@ -770,35 +796,37 @@ class IndexSegment {
         long offsetInLogSegment = blobValue.getOffset().getOffset();
         // ignore entries that have offsets outside the log end offset that this index represents
         if (offsetInLogSegment + blobValue.getSize() <= logEndOffset) {
+          if (blobValue.getRelatedMessageOffset() != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET
+              && blobValue.getRelatedMessageOffset() >= logEndOffset) {
+            throw new IllegalStateException(
+                "Related message offset " + blobValue.getRelatedMessageOffset() + " is >= log end offset "
+                    + logEndOffset);
+          }
           index.put(key, blobValue);
           logger.trace("IndexSegment : {} putting key {} in index offset {} size {}", indexFile.getAbsolutePath(), key,
               blobValue.getOffset(), blobValue.getSize());
           // regenerate the bloom filter for in memory indexes
           bloomFilter.add(ByteBuffer.wrap(key.toBytes()));
           // add to the journal
-          if (blobValue.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
-              && offsetInLogSegment != blobValue.getOriginalMessageOffset()
-              && blobValue.getOriginalMessageOffset() >= startOffset.getOffset()) {
-            // we add an entry for the original message offset if it is within the same index segment
-            journal.addEntry(new Offset(startOffset.getName(), blobValue.getOriginalMessageOffset()), key);
+          if (blobValue.getRelatedMessageOffset() != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET
+              && offsetInLogSegment != blobValue.getRelatedMessageOffset()
+              && blobValue.getRelatedMessageOffset() >= startOffset.getOffset()) {
+            // we add an entry for the related message offset if it is within the same index segment
+            journal.addEntry(new Offset(startOffset.getName(), blobValue.getRelatedMessageOffset()), key);
           }
           journal.addEntry(blobValue.getOffset(), key);
           // sizeWritten is only used for in-memory segments, and for those the padding does not come into picture.
           sizeWritten.addAndGet(key.sizeInBytes() + valueSize);
           numberOfItems.incrementAndGet();
-          if (offsetInLogSegment + blobValue.getSize() > maxEndOffset) {
-            maxEndOffset = offsetInLogSegment + blobValue.getSize();
-          }
         } else {
-          logger.info(
-              "IndexSegment : {} ignoring index entry outside the log end offset that was not synced logEndOffset "
-                  + "{} key {} entryOffset {} entrySize {} entryDeleteState {}", indexFile.getAbsolutePath(),
-              logEndOffset, key, blobValue.getOffset(), blobValue.getSize(),
-              blobValue.isFlagSet(IndexValue.Flags.Delete_Index));
+          throw new IllegalStateException(
+              "There are entries in the index " + indexFile.getAbsolutePath() + " with offset:size "
+                  + blobValue.getOffset() + ":" + blobValue.getSize() + " that are beyond the end offset recorded "
+                  + logEndOffset);
         }
       }
-      endOffset.set(new Offset(startOffset.getName(), maxEndOffset));
-      logger.trace("IndexSegment : {} setting end offset for index {}", indexFile.getAbsolutePath(), maxEndOffset);
+      endOffset.set(new Offset(startOffset.getName(), logEndOffset));
+      logger.trace("IndexSegment : {} setting end offset for index {}", indexFile.getAbsolutePath(), logEndOffset);
       long crc = crcStream.getValue();
       if (crc != stream.readLong()) {
         // reset structures

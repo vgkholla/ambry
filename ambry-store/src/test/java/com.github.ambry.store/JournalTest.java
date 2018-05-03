@@ -33,18 +33,18 @@ public class JournalTest {
     Assert.assertNull("Last offset should be null", journal.getLastOffset());
     Assert.assertNull("Should not be able to get entries because there are none",
         journal.getEntriesSince(new Offset(firstLogSegmentName, 0), true));
-    journal.addEntry(new Offset(firstLogSegmentName, 0), new MockId("id1"));
-    journal.addEntry(new Offset(firstLogSegmentName, 1000), new MockId("id2"));
-    journal.addEntry(new Offset(firstLogSegmentName, 2000), new MockId("id3"));
-    journal.addEntry(new Offset(firstLogSegmentName, 3000), new MockId("id4"));
-    journal.addEntry(new Offset(firstLogSegmentName, 4000), new MockId("id5"));
-    journal.addEntry(new Offset(secondLogSegmentName, 0), new MockId("id6"));
-    journal.addEntry(new Offset(secondLogSegmentName, 1000), new MockId("id7"));
-    journal.addEntry(new Offset(secondLogSegmentName, 2000), new MockId("id8"));
-    journal.addEntry(new Offset(secondLogSegmentName, 3000), new MockId("id9"));
-    journal.addEntry(new Offset(secondLogSegmentName, 4000), new MockId("id10"));
-    Assert.assertEquals("First offset not as expected", new Offset(firstLogSegmentName, 0), journal.getFirstOffset());
-    Assert.assertEquals("Last offset not as expected", new Offset(secondLogSegmentName, 4000), journal.getLastOffset());
+    Assert.assertFalse("Journal should not be full", journal.isFull());
+    Offset firstOffset = new Offset(firstLogSegmentName, 0);
+    addEntryAndVerify(journal, new Offset(firstLogSegmentName, 0), new MockId("id1"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(firstLogSegmentName, 1000), new MockId("id2"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(firstLogSegmentName, 2000), new MockId("id3"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(firstLogSegmentName, 3000), new MockId("id4"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(firstLogSegmentName, 4000), new MockId("id5"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 0), new MockId("id6"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 1000), new MockId("id7"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 2000), new MockId("id8"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 3000), new MockId("id9"), firstOffset, false);
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 4000), new MockId("id10"), firstOffset, true);
     List<JournalEntry> entries = journal.getEntriesSince(new Offset(firstLogSegmentName, 0), true);
     Assert.assertEquals(entries.get(0).getOffset(), new Offset(firstLogSegmentName, 0));
     Assert.assertEquals(entries.get(0).getKey(), new MockId("id1"));
@@ -69,12 +69,16 @@ public class JournalTest {
     Assert.assertEquals(entries.get(4).getOffset(), new Offset(secondLogSegmentName, 2000));
     Assert.assertEquals(entries.get(4).getKey(), new MockId("id8"));
     Assert.assertEquals(entries.size(), 5);
-    Assert.assertNull("Should not be able to get entries because offset does not exist",
-        journal.getEntriesSince(new Offset(firstLogSegmentName, 1), true));
-    journal.addEntry(new Offset(secondLogSegmentName, 5000), new MockId("id11"));
-    Assert.assertEquals("First offset not as expected", new Offset(firstLogSegmentName, 1000),
-        journal.getFirstOffset());
-    Assert.assertEquals("Last offset not as expected", new Offset(secondLogSegmentName, 5000), journal.getLastOffset());
+    for (boolean inclusive : new boolean[]{true, false}) {
+      entries = journal.getEntriesSince(new Offset(firstLogSegmentName, 1), inclusive);
+      Assert.assertEquals(entries.get(0).getOffset(), new Offset(firstLogSegmentName, 1000));
+      Assert.assertEquals(entries.get(0).getKey(), new MockId("id2"));
+      Assert.assertEquals(entries.size(), 5);
+      Assert.assertEquals(entries.get(4).getOffset(), new Offset(secondLogSegmentName, 0));
+      Assert.assertEquals(entries.get(4).getKey(), new MockId("id6"));
+    }
+    addEntryAndVerify(journal, new Offset(secondLogSegmentName, 5000), new MockId("id11"),
+        new Offset(firstLogSegmentName, 1000), true);
     entries = journal.getEntriesSince(new Offset(firstLogSegmentName, 0), true);
     Assert.assertNull(entries);
     entries = journal.getEntriesSince(new Offset(firstLogSegmentName, 1000), false);
@@ -83,5 +87,21 @@ public class JournalTest {
     Assert.assertEquals(entries.size(), 5);
     Assert.assertEquals(entries.get(4).getOffset(), new Offset(secondLogSegmentName, 1000));
     Assert.assertEquals(entries.get(4).getKey(), new MockId("id7"));
+  }
+
+  /**
+   * Adds an entry to the {@code journal} and verifies values of some getters
+   * @param journal the {@link Journal} instance to add the entry to
+   * @param offsetToAdd the {@link Offset} to add
+   * @param key the {@link StoreKey} to add
+   * @param firstOffset the expected value of {@link Journal#getFirstOffset()}
+   * @param isFull the expected value of {@link Journal#isFull()}
+   */
+  private void addEntryAndVerify(Journal journal, Offset offsetToAdd, StoreKey key, Offset firstOffset,
+      boolean isFull) {
+    journal.addEntry(offsetToAdd, key);
+    Assert.assertEquals("First offset not as expected", firstOffset, journal.getFirstOffset());
+    Assert.assertEquals("Last offset not as expected", offsetToAdd, journal.getLastOffset());
+    Assert.assertEquals("Value of isFull not as expected", isFull, journal.isFull());
   }
 }

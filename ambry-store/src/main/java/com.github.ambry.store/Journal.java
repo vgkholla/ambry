@@ -54,6 +54,7 @@ class Journal {
   private final AtomicInteger currentNumberOfEntries;
   private final String dataDir;
   private final Logger logger = LoggerFactory.getLogger(getClass());
+  private Offset latestIndexSegmentStartOffset;
 
   /**
    * The journal that holds the most recent entries in a store sorted by offset of the blob on disk
@@ -68,6 +69,10 @@ class Journal {
     this.maxEntriesToReturn = maxEntriesToReturn;
     this.currentNumberOfEntries = new AtomicInteger(0);
     this.dataDir = dataDir;
+  }
+
+  void setLatestIndexSegmentStartOffset(Offset offset) {
+    latestIndexSegmentStartOffset = offset;
   }
 
   /**
@@ -123,9 +128,10 @@ class Journal {
     Map.Entry<Offset, StoreKey> first = journal.firstEntry();
     Map.Entry<Offset, StoreKey> last = journal.lastEntry();
 
-    // check if the journal contains the offset.
-    if (first == null || offset.compareTo(first.getKey()) < 0 || last == null || offset.compareTo(last.getKey()) > 0
-        || !journal.containsKey(offset)) {
+    // check if the journal can contain the offset.
+    // it doesn't matter if the actual offset is not in the journal - the offset serves as a a marker and all offsets
+    // beyond it will be returned.
+    if (first == null || offset.compareTo(first.getKey()) < 0 || last == null || offset.compareTo(last.getKey()) > 0) {
       return null;
     }
 
@@ -176,5 +182,12 @@ class Journal {
    */
   Long getCrcOfKey(StoreKey key) {
     return recentCrcs.get(key);
+  }
+
+  /**
+   * @return {@code true} if the journal is at capacity
+   */
+  boolean isFull() {
+    return currentNumberOfEntries.get() == maxEntriesToJournal;
   }
 }

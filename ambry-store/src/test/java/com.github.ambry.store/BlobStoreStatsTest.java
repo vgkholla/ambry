@@ -291,8 +291,8 @@ public class BlobStoreStatsTest {
     // advance time to the next seconds before adding the deletes
     advanceTimeToNextSecond();
     // 2 deletes from the last index segment
-    state.addDeleteEntry(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey()));
-    state.addDeleteEntry(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey()));
+    state.addDeleteEntry(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey(), false));
+    state.addDeleteEntry(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey(), false));
 
     long expectedDeltaBeforeDeletesRelevant = 2 * CuratedLogIndexState.DELETE_RECORD_SIZE;
     long totalLogSegmentValidSizeBeforeDeletesRelevant =
@@ -434,7 +434,7 @@ public class BlobStoreStatsTest {
       blobStoreStats.handleNewPutEntry(entry.getValue());
     }
     // delete one of the newly added put
-    newDelete(blobStoreStats, state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey()));
+    newDelete(blobStoreStats, state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey(), false));
     queueProcessedLatch = new CountDownLatch(1);
     // a probe put with a latch to inform us about the state of the queue
     blobStoreStats.handleNewPutEntry(new MockIndexValue(queueProcessedLatch, state.index.getCurrentEndOffset()));
@@ -499,9 +499,9 @@ public class BlobStoreStatsTest {
     }
     List<MockId> newDeletes = new ArrayList<>();
     // 1 delete from the first index segment
-    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.firstKey()));
+    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.firstKey(), false));
     // 1 delete from the last index segment
-    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey()));
+    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey(), false));
     for (MockId idToDelete : newDeletes) {
       if (idToDelete != null) {
         newDelete(blobStoreStats, idToDelete);
@@ -519,7 +519,7 @@ public class BlobStoreStatsTest {
     }
     newDeletes.clear();
     // 1 delete from the last index segment
-    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey()));
+    newDeletes.add(state.getIdToDeleteFromIndexSegment(state.referenceIndex.lastKey(), false));
     for (MockId idToDelete : newDeletes) {
       if (idToDelete != null) {
         newDelete(blobStoreStats, idToDelete);
@@ -845,8 +845,9 @@ public class BlobStoreStatsTest {
   private void newDelete(BlobStoreStats blobStoreStats, MockId idToDelete)
       throws InterruptedException, StoreException, IOException {
     state.addDeleteEntry(idToDelete);
-    Pair<IndexValue, IndexValue> putAndDeletePair = state.allKeys.get(idToDelete);
-    blobStoreStats.handleNewDeleteEntry(putAndDeletePair.getSecond(), putAndDeletePair.getFirst());
+    IndexValue putValue = state.getExpectedValue(idToDelete, true);
+    IndexValue deleteValue = state.getExpectedValue(idToDelete, false);
+    blobStoreStats.handleNewDeleteEntry(deleteValue, putValue);
   }
 
   /**

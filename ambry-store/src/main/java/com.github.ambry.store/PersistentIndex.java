@@ -52,7 +52,7 @@ class PersistentIndex {
    * Represents the different types of index entries.
    */
   enum IndexEntryType {
-    ANY, PUT, DELETE,
+    PUT, DELETE,
   }
 
   static final short VERSION_0 = 0;
@@ -135,10 +135,9 @@ class PersistentIndex {
       DiskIOScheduler diskIOScheduler, StoreMetrics metrics, Time time, UUID sessionId, UUID incarnationId)
       throws StoreException {
     /*
-    If a put and a delete of a key happens within the same segment, the segment will have only one entry for it,
-    whereas the journal keeps both. In order to account for this, and to ensure that the journal always has all the
-    elements held by the latest segment, the journal needs to be able to hold twice the max number of elements a
-    segment can hold.
+    The journal holds all operations on a key (put, update) whereas the latest index segment has only one entry per
+    key. The journal size is twice the size of the index segment to account for these "extra" entries. However, a
+    rollover will occur to maintain the invariant that all entries in the latest segment are also in the journal.
     */
     this(datadir, storeId, scheduler, log, config, factory, recovery, hardDelete, diskIOScheduler, metrics,
         new Journal(datadir, 2 * config.storeIndexMaxNumberOfInmemElements,
@@ -208,6 +207,7 @@ class PersistentIndex {
       setEndOffsets();
       log.setActiveSegment(getCurrentEndOffset().getName());
       logEndOffsetOnStartup = log.getEndOffset();
+      journal.setLatestIndexSegmentStartOffset(validIndexSegments.lastKey());
 
       if (hardDelete != null) {
         // After recovering the last messages, and setting the log end offset, let the hard delete thread do its recovery.
@@ -278,6 +278,7 @@ class PersistentIndex {
    * @throws IOException
    */
   private void recover(MessageStoreRecovery recovery) throws StoreException, IOException {
+    // TODO (TTL update): handle TTL update in recovery (needs changes in MessageInfo)
     final Timer.Context context = metrics.recoveryTime.time();
     LogSegment firstSegment = log.getFirstSegment();
     Offset recoveryStartOffset = new Offset(firstSegment.getName(), firstSegment.getStartOffset());
@@ -405,22 +406,25 @@ class PersistentIndex {
    * @param fileSpan The file span that this entry represents in the log
    * @throws StoreException
    */
-  void addToIndex(IndexEntry entry, FileSpan fileSpan) throws StoreException {
+  IndexValue addToIndex(IndexEntry entry, FileSpan fileSpan) throws StoreException {
+    IndexValue value;
     validateFileSpan(fileSpan, true);
     if (needToRollOverIndex(entry)) {
       int valueSize = entry.getValue().getBytes().capacity();
       int entrySize = entry.getKey().sizeInBytes() + valueSize;
       IndexSegment info =
           new IndexSegment(dataDir, entry.getValue().getOffset(), factory, entrySize, valueSize, config, metrics, time);
-      info.addEntry(entry, fileSpan.getEndOffset());
+      value = info.addEntry(entry, fileSpan.getEndOffset());
       // always add to both valid and in-flux index segment map to account for the fact that changeIndexSegments()
       // might be in the process of updating the reference to validIndexSegments
       validIndexSegments.put(info.getStartOffset(), info);
       inFluxIndexSegments.put(info.getStartOffset(), info);
     } else {
-      validIndexSegments.lastEntry().getValue().addEntry(entry, fileSpan.getEndOffset());
+      value = validIndexSegments.lastEntry().getValue().addEntry(entry, fileSpan.getEndOffset());
     }
     journal.addEntry(entry.getValue().getOffset(), entry.getKey(), entry.getCrc());
+    journal.setLatestIndexSegmentStartOffset(validIndexSegments.lastKey());
+    return value;
   }
 
   /**
@@ -485,6 +489,12 @@ class PersistentIndex {
           lastSegment.getStartOffset(), offset, lastSegment.getLogSegmentName(), offset.getName());
       return true;
     }
+    // if the journal's first entry is within the current index segment and the journal is full, then rollover to
+    // maintain the invariant that all entries in the current index segment must be in the journal
+    if (journal.isFull() && journal.getFirstOffset().compareTo(lastSegment.getStartOffset()) >= 0) {
+      logger.info("Index: {} Rolling over from {} to {} because the journal is full and can no longer have more entries"
+          + " from the current index segment", dataDir, lastSegment.getStartOffset(), offset);
+    }
     return false;
   }
 
@@ -508,7 +518,7 @@ class PersistentIndex {
    * @throws StoreException
    */
   IndexValue findKey(StoreKey key, FileSpan fileSpan) throws StoreException {
-    return findKey(key, fileSpan, IndexEntryType.ANY, validIndexSegments);
+    return findKey(key, fileSpan, EnumSet.allOf(IndexEntryType.class), validIndexSegments);
   }
 
   /**
@@ -516,14 +526,15 @@ class PersistentIndex {
    * within the given {@code fileSpan}.
    * @param key the {@link StoreKey} whose {@link IndexValue} is required.
    * @param fileSpan {@link FileSpan} which specifies the range within which search should be made
-   * @param type the {@link IndexEntryType} desired.
+   * @param types the accepted {@link IndexEntryType}s.
    * @param indexSegments the map of index segment start {@link Offset} to {@link IndexSegment} instances
    * @return The associated {@link IndexValue} of the type {@code type} if it exists within the {@code fileSpan},
    * {@code null} otherwise.
    * @throws StoreException
    */
-  private IndexValue findKey(StoreKey key, FileSpan fileSpan, IndexEntryType type,
+  private IndexValue findKey(StoreKey key, FileSpan fileSpan, EnumSet<IndexEntryType> types,
       ConcurrentSkipListMap<Offset, IndexSegment> indexSegments) throws StoreException {
+    List<IndexValue> foundValues = new ArrayList<>();
     IndexValue retValue = null;
     final Timer.Context context = metrics.findTime.time();
     try {
@@ -547,16 +558,30 @@ class PersistentIndex {
         if (value != null) {
           logger.trace("Index : {} found value offset {} size {} ttl {}", dataDir, value.getOffset(), value.getSize(),
               value.getExpiresAtMs());
-          if (type.equals(IndexEntryType.ANY)) {
+          foundValues.add(value);
+          if (types.contains(IndexEntryType.DELETE) && value.isFlagSet(IndexValue.Flags.Delete_Index)) {
             retValue = value;
             break;
-          } else if (type.equals(IndexEntryType.DELETE) && value.isFlagSet(IndexValue.Flags.Delete_Index)) {
-            retValue = value;
-            break;
-          } else if (type.equals(IndexEntryType.PUT) && !value.isFlagSet(IndexValue.Flags.Delete_Index)) {
-            retValue = value;
-            break;
+          } else if (types.contains(IndexEntryType.PUT) && !value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+            long relatedMessageOffset = value.getRelatedMessageOffset();
+            if (!value.isFlagSet(IndexValue.Flags.Ttl_Update_Index) || (
+                relatedMessageOffset != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET
+                    && relatedMessageOffset > value.getOffset().getOffset())) {
+              // this is not a ttl update entry OR
+              // this is a merged put and ttl update index entry
+              retValue = value;
+              break;
+            }
           }
+        }
+      }
+      // merge entries if required to account for updated fields
+      if (retValue != null) {
+        IndexValue latest = foundValues.get(0);
+        if (latest.getExpiresAtMs() != retValue.getExpiresAtMs()) {
+          retValue = new IndexValue(retValue.getOffset().getName(), retValue.getBytes(), retValue.getVersion());
+          retValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+          retValue.setExpiresAtMs(foundValues.get(0).getExpiresAtMs());
         }
       }
       metrics.segmentsAccessedPerBlobCount.update(segmentsSearched);
@@ -619,17 +644,46 @@ class PersistentIndex {
       newValue =
           new IndexValue(size, fileSpan.getStartOffset(), info.getExpirationTimeInMs(), info.getOperationTimeMs(),
               info.getAccountId(), info.getContainerId());
-      newValue.clearOriginalMessageOffset();
+      newValue.clearRelatedMessageOffset();
     } else {
-      newValue = new IndexValue(value.getSize(), value.getOffset(), value.getExpiresAtMs(), deletionTimeMs,
-          value.getAccountId(), value.getContainerId());
+      newValue =
+          new IndexValue(value.getSize(), value.getOffset(), value.getFlags(), value.getExpiresAtMs(), deletionTimeMs,
+              value.getAccountId(), value.getContainerId());
       newValue.setNewOffset(fileSpan.getStartOffset());
       newValue.setNewSize(size);
     }
     newValue.setFlag(IndexValue.Flags.Delete_Index);
-    addToIndex(new IndexEntry(id, newValue, null), fileSpan);
-    return new IndexValue(newValue.getSize(), newValue.getOffset(), newValue.getFlags(), newValue.getExpiresAtMs(),
-        newValue.getOperationTimeInMs(), newValue.getAccountId(), newValue.getContainerId());
+    return addToIndex(new IndexEntry(id, newValue, null), fileSpan);
+  }
+
+  /**
+   * Marks a blob as permanent
+   * @param id the {@link StoreKey} of the blob
+   * @param fileSpan the file span represented by this entry in the log
+   * @param operationTimeMs the time of the update operation
+   * @return the {@link IndexValue} of the ttl update record
+   * @throws StoreException if there is any problem writing the index record
+   */
+  IndexValue markAsPermanent(StoreKey id, FileSpan fileSpan, long operationTimeMs) throws StoreException {
+    validateFileSpan(fileSpan, true);
+    IndexValue value = findKey(id);
+    if (value == null) {
+      throw new StoreException("Id " + id + " not present in index " + dataDir, StoreErrorCodes.ID_Not_Found);
+    } else if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+      throw new StoreException("Id " + id + " deleted in index " + dataDir, StoreErrorCodes.ID_Deleted);
+    } else if (value.isFlagSet(IndexValue.Flags.Ttl_Update_Index)) {
+      throw new StoreException("TTL of Id " + id + " already updated in index" + dataDir,
+          StoreErrorCodes.TTL_Already_Updated);
+    }
+    long size = fileSpan.getEndOffset().getOffset() - fileSpan.getStartOffset().getOffset();
+    IndexValue newValue =
+        new IndexValue(value.getSize(), value.getOffset(), Utils.Infinite_Time, operationTimeMs, value.getAccountId(),
+            value.getContainerId());
+    newValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+    newValue.setNewOffset(fileSpan.getStartOffset());
+    newValue.setNewSize(size);
+    newValue = addToIndex(new IndexEntry(id, newValue, null), fileSpan);
+    return new IndexValue(newValue.getOffset().getName(), newValue.getBytes(), newValue.getVersion());
   }
 
   /**
@@ -641,7 +695,7 @@ class PersistentIndex {
    */
   BlobReadOptions getBlobReadInfo(StoreKey id, EnumSet<StoreGetOptions> getOptions) throws StoreException {
     ConcurrentSkipListMap<Offset, IndexSegment> indexSegments = validIndexSegments;
-    IndexValue value = findKey(id, null, IndexEntryType.ANY, indexSegments);
+    IndexValue value = findKey(id, null, EnumSet.allOf(IndexEntryType.class), indexSegments);
     BlobReadOptions readOptions;
     if (value == null) {
       throw new StoreException("Id " + id + " not present in index " + dataDir, StoreErrorCodes.ID_Not_Found);
@@ -674,10 +728,10 @@ class PersistentIndex {
     BlobReadOptions readOptions;
     try {
       IndexValue putValue =
-          findKey(key, new FileSpan(getStartOffset(indexSegments), value.getOffset()), IndexEntryType.PUT,
+          findKey(key, new FileSpan(getStartOffset(indexSegments), value.getOffset()), EnumSet.of(IndexEntryType.PUT),
               indexSegments);
-      if (value.getOriginalMessageOffset() != value.getOffset().getOffset()
-          && value.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET) {
+      if (value.getRelatedMessageOffset() != value.getOffset().getOffset()
+          && value.getRelatedMessageOffset() != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET) {
         // PUT record in the same log segment.
         String logSegmentName = value.getOffset().getName();
         // The delete entry in the index might not contain the information about the size of the original blob. So we
@@ -685,12 +739,12 @@ class PersistentIndex {
         // original message offset and ends at the delete message's start offset (the original message surely cannot go
         // beyond the start offset of the delete message).
         MessageInfo deletedBlobInfo =
-            hardDelete.getMessageInfo(log.getSegment(logSegmentName), value.getOriginalMessageOffset(), factory);
+            hardDelete.getMessageInfo(log.getSegment(logSegmentName), value.getRelatedMessageOffset(), factory);
         if (putValue != null && putValue.getOffset().getName().equals(value.getOffset().getName())) {
-          if (putValue.getOffset().getOffset() != value.getOriginalMessageOffset()) {
+          if (putValue.getOffset().getOffset() != value.getRelatedMessageOffset()) {
             logger.error(
                 "Offset in PUT index entry {} is different from original message offset in delete entry {} for key {}",
-                putValue.getOffset().getOffset(), value.getOriginalMessageOffset(), key);
+                putValue.getOffset().getOffset(), value.getRelatedMessageOffset(), key);
             metrics.putEntryDeletedInfoMismatchCount.inc();
           }
           if (putValue.getSize() != deletedBlobInfo.getSize()) {
@@ -698,28 +752,23 @@ class PersistentIndex {
                 putValue.getSize(), deletedBlobInfo.getSize(), key);
             metrics.putEntryDeletedInfoMismatchCount.inc();
           }
-          long putValueExpiresAtMs = Utils.getTimeInMsToTheNearestSec(putValue.getExpiresAtMs());
-          long deletedBlobInfoExpiresAtMs = Utils.getTimeInMsToTheNearestSec(deletedBlobInfo.getExpirationTimeInMs());
-          if (putValueExpiresAtMs != deletedBlobInfoExpiresAtMs) {
-            logger.error("Expire time in PUT index entry {} is different from that in the PUT record {} for ID {}",
-                putValueExpiresAtMs, deletedBlobInfoExpiresAtMs, key);
-            metrics.putEntryDeletedInfoMismatchCount.inc();
-          }
         }
-        Offset offset = new Offset(logSegmentName, value.getOriginalMessageOffset());
+        Offset offset = new Offset(logSegmentName, value.getRelatedMessageOffset());
+        // use the expiration time from the original value because it may have been updated
         readOptions = new BlobReadOptions(log, offset,
-            new MessageInfo(deletedBlobInfo.getStoreKey(), deletedBlobInfo.getSize(),
-                deletedBlobInfo.getExpirationTimeInMs(), deletedBlobInfo.getAccountId(),
-                deletedBlobInfo.getContainerId(), deletedBlobInfo.getOperationTimeMs()));
+            new MessageInfo(deletedBlobInfo.getStoreKey(), deletedBlobInfo.getSize(), value.getExpiresAtMs(),
+                deletedBlobInfo.getAccountId(), deletedBlobInfo.getContainerId(),
+                deletedBlobInfo.getOperationTimeMs()));
       } else if (putValue != null) {
         // PUT record in a different log segment.
+        // use the expiration time from the original value because it may have been updated
         readOptions = new BlobReadOptions(log, putValue.getOffset(),
-            new MessageInfo(key, putValue.getSize(), putValue.getExpiresAtMs(), putValue.getAccountId(),
+            new MessageInfo(key, putValue.getSize(), value.getExpiresAtMs(), putValue.getAccountId(),
                 putValue.getContainerId(), putValue.getOperationTimeInMs()));
       } else {
         // PUT record no longer available.
         throw new StoreException("Did not find PUT index entry for key [" + key
-            + "] and the the original offset in value of the DELETE entry was [" + value.getOriginalMessageOffset()
+            + "] and the the original offset in value of the DELETE entry was [" + value.getRelatedMessageOffset()
             + "]", StoreErrorCodes.ID_Deleted);
       }
     } catch (IOException e) {
@@ -795,7 +844,7 @@ class PersistentIndex {
           for (JournalEntry entry : entries) {
             IndexValue value =
                 findKey(entry.getKey(), new FileSpan(entry.getOffset(), getCurrentEndOffset(indexSegments)),
-                    IndexEntryType.ANY, indexSegments);
+                    EnumSet.allOf(IndexEntryType.class), indexSegments);
             messageEntries.add(
                 new MessageInfo(entry.getKey(), value.getSize(), value.isFlagSet(IndexValue.Flags.Delete_Index),
                     value.getExpiresAtMs(), value.getAccountId(), value.getContainerId(),
@@ -836,7 +885,7 @@ class PersistentIndex {
                 (time.milliseconds() - startTimeInMs));
 
             startTimeInMs = time.milliseconds();
-            updateDeleteStateForMessages(messageEntries);
+            updateStateForMessages(messageEntries);
             logger.trace("Journal based to segment based token, Time used to update delete state: {}",
                 (time.milliseconds() - startTimeInMs));
           } else {
@@ -861,7 +910,7 @@ class PersistentIndex {
         logger.trace("Segment based token, Time used to find entries: {}", (time.milliseconds() - startTimeInMs));
 
         startTimeInMs = time.milliseconds();
-        updateDeleteStateForMessages(messageEntries);
+        updateStateForMessages(messageEntries);
         logger.trace("Segment based token, Time used to update delete state: {}",
             (time.milliseconds() - startTimeInMs));
 
@@ -1097,9 +1146,8 @@ class PersistentIndex {
             }
           }
           newTokenOffsetInJournal = entry.getOffset();
-          IndexValue value =
-              findKey(entry.getKey(), new FileSpan(entry.getOffset(), endOffsetOfSnapshot), IndexEntryType.ANY,
-                  indexSegments);
+          IndexValue value = findKey(entry.getKey(), new FileSpan(entry.getOffset(), endOffsetOfSnapshot),
+              EnumSet.allOf(IndexEntryType.class), indexSegments);
           messageEntries.add(
               new MessageInfo(entry.getKey(), value.getSize(), value.isFlagSet(IndexValue.Flags.Delete_Index),
                   value.getExpiresAtMs(), value.getAccountId(), value.getContainerId(), value.getOperationTimeInMs()));
@@ -1165,8 +1213,22 @@ class PersistentIndex {
    * @param messageEntries The message entry list where duplicates need to be removed
    */
   private void eliminateDuplicates(List<MessageInfo> messageEntries) {
-    Set<StoreKey> setToFindDuplicate = new HashSet<StoreKey>();
-    ListIterator<MessageInfo> messageEntriesIterator = messageEntries.listIterator(messageEntries.size());
+    Set<StoreKey> setToFindDuplicate = new HashSet<>();
+    // first remove the ttl update MessageInfo of any key whose put MessageInfo is already present
+    ListIterator<MessageInfo> messageEntriesIterator = messageEntries.listIterator(0);
+    while (messageEntriesIterator.hasNext()) {
+      MessageInfo messageInfo = messageEntriesIterator.next();
+      if (!messageInfo.isDeleted()) {
+        if (setToFindDuplicate.contains(messageInfo.getStoreKey())) {
+          messageEntriesIterator.remove();
+        } else {
+          setToFindDuplicate.add(messageInfo.getStoreKey());
+        }
+      }
+    }
+    // next, remove any put/ttl update if a delete is present
+    setToFindDuplicate.clear();
+    messageEntriesIterator = messageEntries.listIterator(messageEntries.size());
     while (messageEntriesIterator.hasPrevious()) {
       MessageInfo messageInfo = messageEntriesIterator.previous();
       if (setToFindDuplicate.contains(messageInfo.getStoreKey())) {
@@ -1178,21 +1240,21 @@ class PersistentIndex {
   }
 
   /**
-   * Updates the messages with their deleted state. This method can be used when
-   * the messages have been retrieved from an old index segment and needs to be updated with the deleted state
-   * from the new index segment
-   * @param messageEntries The message entries that needs to be updated with the delete state
+   * Updates the messages with their updated state (ttl update/delete). This method can be used when
+   * the messages have been retrieved from an old index segment and needs to be updated with the state from the new
+   * index segment
+   * @param messageEntries The message entries that may need to be updated.
    */
-  private void updateDeleteStateForMessages(List<MessageInfo> messageEntries) throws StoreException {
+  private void updateStateForMessages(List<MessageInfo> messageEntries) throws StoreException {
     ListIterator<MessageInfo> messageEntriesIterator = messageEntries.listIterator();
     while (messageEntriesIterator.hasNext()) {
       MessageInfo messageInfo = messageEntriesIterator.next();
       if (!messageInfo.isDeleted()) {
-        // ok to use most recent ref to filter out deleted records.
+        // ok to use most recent ref
         IndexValue indexValue = findKey(messageInfo.getStoreKey());
         messageInfo = new MessageInfo(messageInfo.getStoreKey(), messageInfo.getSize(),
-            indexValue.isFlagSet(IndexValue.Flags.Delete_Index), messageInfo.getExpirationTimeInMs(),
-            indexValue.getAccountId(), indexValue.getContainerId(), indexValue.getOperationTimeInMs());
+            indexValue.isFlagSet(IndexValue.Flags.Delete_Index), indexValue.getExpiresAtMs(), indexValue.getAccountId(),
+            indexValue.getContainerId(), indexValue.getOperationTimeInMs());
         messageEntriesIterator.set(messageInfo);
       }
     }
@@ -1353,7 +1415,7 @@ class PersistentIndex {
 
             IndexValue value =
                 findKey(entry.getKey(), new FileSpan(entry.getOffset(), getCurrentEndOffset(indexSegments)),
-                    IndexEntryType.ANY, indexSegments);
+                    EnumSet.allOf(IndexEntryType.class), indexSegments);
             if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
               messageEntries.add(
                   new MessageInfo(entry.getKey(), value.getSize(), true, value.getExpiresAtMs(), value.getAccountId(),

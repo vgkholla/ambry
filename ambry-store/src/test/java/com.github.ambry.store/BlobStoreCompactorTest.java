@@ -512,7 +512,7 @@ public class BlobStoreCompactorTest {
 
     // 8. Delete entry for an id that is in another log segment
     // won't be cleaned up.
-    MockId idFromAnotherSegment = state.getIdToDeleteFromLogSegment(state.log.getFirstSegment());
+    MockId idFromAnotherSegment = state.getIdToDeleteFromLogSegment(state.log.getFirstSegment(), false);
     state.addDeleteEntry(idFromAnotherSegment);
 
     // 9. Delete entry for a Put entry that doesn't exist. However, if it existed, it wouldn't have been eligible for
@@ -565,7 +565,7 @@ public class BlobStoreCompactorTest {
         CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, logSegmentStartOffset);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(1), delExpPutSameIdxSegId, currentExpectedOffset,
-        CuratedLogIndexState.DELETE_RECORD_SIZE, 0, true, IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET);
+        CuratedLogIndexState.DELETE_RECORD_SIZE, 0, true, IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(2), willExpPut, currentExpectedOffset, CuratedLogIndexState.PUT_RECORD_SIZE,
         expiryTimeMs, false, currentExpectedOffset);
@@ -593,7 +593,7 @@ public class BlobStoreCompactorTest {
         Utils.Infinite_Time, true, willBeDelOffset);
     currentExpectedOffset += CuratedLogIndexState.DELETE_RECORD_SIZE;
     verifyIndexEntry(indexEntries.get(2), idFromAnotherSegment, currentExpectedOffset,
-        CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET);
+        CuratedLogIndexState.DELETE_RECORD_SIZE, Utils.Infinite_Time, true, IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET);
 
     // no clean shutdown file should exist
     assertFalse("Clean shutdown file not deleted",
@@ -847,8 +847,8 @@ public class BlobStoreCompactorTest {
       // the delete record should remain
       assertTrue(id + " should be deleted", value.isFlagSet(IndexValue.Flags.Delete_Index));
       // the put record should be cleaned up
-      assertEquals("There should no original message offset", IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET,
-          value.getOriginalMessageOffset());
+      assertEquals("There should no original message offset", IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET,
+          value.getRelatedMessageOffset());
       try {
         state.index.getBlobReadInfo(id, EnumSet.allOf(StoreGetOptions.class));
         fail("Should not be able to GET " + id);
@@ -865,7 +865,7 @@ public class BlobStoreCompactorTest {
       // the delete record should remain
       assertTrue(id + " should be deleted", value.isFlagSet(IndexValue.Flags.Delete_Index));
       // the put record however should not be cleaned up
-      if (value.getOriginalMessageOffset() == IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET) {
+      if (value.getRelatedMessageOffset() == IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET) {
         // PUT record should exist
         try (BlobReadOptions options = state.index.getBlobReadInfo(id, EnumSet.allOf(StoreGetOptions.class))) {
           checkRecord(id, options);
@@ -892,7 +892,7 @@ public class BlobStoreCompactorTest {
     state.addDeleteEntry(orphanedId);
     // get the index value and "lose" the PUT record. This works because we get a reference to the value in the index.
     IndexValue value = state.index.findKey(orphanedId);
-    value.clearOriginalMessageOffset();
+    value.clearRelatedMessageOffset();
     // add a put entry that spans the rest of the log segment
     long lastRecSize = state.log.getSegmentCapacity() - state.index.getCurrentEndOffset().getOffset();
     state.addPutEntries(1, lastRecSize, Utils.Infinite_Time);
@@ -1049,7 +1049,7 @@ public class BlobStoreCompactorTest {
       assertTrue("There are no more segments to delete data from", logSegments.size() > 0);
       int selectedIdx = TestUtils.RANDOM.nextInt(logSegments.size());
       String segmentToDeleteFrom = logSegments.get(selectedIdx);
-      MockId idToDelete = state.getIdToDeleteFromLogSegment(state.log.getSegment(segmentToDeleteFrom));
+      MockId idToDelete = state.getIdToDeleteFromLogSegment(state.log.getSegment(segmentToDeleteFrom), false);
       if (idToDelete == null) {
         logSegments.remove(selectedIdx);
       } else {
@@ -1691,7 +1691,7 @@ public class BlobStoreCompactorTest {
     assertEquals("Size not as expected", size, value.getSize());
     assertEquals("ExpiresAtMs not as expected", expiresAtMs, value.getExpiresAtMs());
     assertEquals("Entry type not as expected", isDeleted, value.isFlagSet(IndexValue.Flags.Delete_Index));
-    assertEquals("Original message offset not as expected", origMsgOffset, value.getOriginalMessageOffset());
+    assertEquals("Original message offset not as expected", origMsgOffset, value.getRelatedMessageOffset());
   }
 
   // interruptionDuringLogCommitAndCleanupTest() helpers.

@@ -60,8 +60,8 @@ import static org.junit.Assert.*;
 class CuratedLogIndexState {
   private static final byte[] RECOVERY_INFO = new byte[100];
   // setupTestState() is coupled to these numbers. Changing them *will* cause setting test state or tests to fail.
-  private static final long LOG_CAPACITY = 20000;
-  private static final long SEGMENT_CAPACITY = 2000;
+  private static final long LOG_CAPACITY = 30000;
+  private static final long SEGMENT_CAPACITY = 3000;
   private static final long HARD_DELETE_START_OFFSET = 11;
   private static final long HARD_DELETE_LAST_PART_SIZE = 13;
 
@@ -72,6 +72,7 @@ class CuratedLogIndexState {
   // deliberately do not divide the capacities perfectly.
   static final long PUT_RECORD_SIZE = 53;
   static final long DELETE_RECORD_SIZE = 29;
+  static final long TTL_UPDATE_RECORD_SIZE = 37;
 
   static {
     try {
@@ -85,16 +86,13 @@ class CuratedLogIndexState {
   // The reference index to compare against. Key is index segment start Offset, Value is the reference index segment.
   // This reflects exactly how PersistentIndex is supposed to look.
   final TreeMap<Offset, TreeMap<MockId, IndexValue>> referenceIndex = new TreeMap<>();
-  // A map of all the keys. The key is the MockId and the value is a pair of index segment start Offsets.
-  // first Offset represents the index segment start offset of the PUT entry.
-  // second Offset represents the index segment start offset of the DELETE entry (null if the key has not been deleted).
-  final Map<MockId, Pair<Offset, Offset>> indexSegmentStartOffsets = new HashMap<>();
-  // A map of all the keys. The key is the MockId and the value is a pair of IndexValues.
-  // The first IndexValue represents the value of the PUT entry.
-  // The second IndexValue represents the value of the DELETE entry (null if the key has not been deleted).
-  final Map<MockId, Pair<IndexValue, IndexValue>> allKeys = new HashMap<>();
+  // A map of all the keys. The key is the MockId and the value is a list of IndexValues as seen in the referenceIndex
+  // with earliest one first and latest one last
+  final Map<MockId, List<IndexValue>> allKeys = new HashMap<>();
   // map of all index segments to their last modified times
   final Map<Offset, Long> lastModifiedTimesInSecs = new HashMap<>();
+  // Set of all TTL updated keys
+  final Set<MockId> ttlUpdatedKeys = new HashSet<>();
   // Set of all deleted keys
   final Set<MockId> deletedKeys = new HashSet<>();
   // Set of all expired keys
@@ -206,8 +204,7 @@ class CuratedLogIndexState {
    * @throws IOException
    * @throws StoreException
    */
-  List<IndexEntry> addPutEntries(int count, long size, long expiresAtMs)
-      throws InterruptedException, IOException, StoreException {
+  List<IndexEntry> addPutEntries(int count, long size, long expiresAtMs) throws IOException, StoreException {
     if (count <= 0) {
       throw new IllegalArgumentException("Number of put entries to add cannot be <= 0");
     }
@@ -223,14 +220,14 @@ class CuratedLogIndexState {
         advanceTime(DELAY_BETWEEN_LAST_MODIFIED_TIMES_MS);
         referenceIndex.put(indexSegmentStartOffset, new TreeMap<MockId, IndexValue>());
       }
-      IndexValue value = new IndexValue(size, fileSpan.getStartOffset(), expiresAtMs, time.milliseconds(),
-          Utils.getRandomShort(TestUtils.RANDOM), Utils.getRandomShort(TestUtils.RANDOM));
       MockId id = getUniqueId();
+      IndexValue value =
+          new IndexValue(size, fileSpan.getStartOffset(), expiresAtMs, time.milliseconds(), id.getAccountId(),
+              id.getContainerId());
       IndexEntry entry = new IndexEntry(id, value);
       indexEntries.add(entry);
       logOrder.put(fileSpan.getStartOffset(), new Pair<>(id, new LogEntry(dataWritten, value)));
-      indexSegmentStartOffsets.put(id, new Pair<Offset, Offset>(indexSegmentStartOffset, null));
-      allKeys.put(id, new Pair<IndexValue, IndexValue>(value, null));
+      allKeys.put(id, new ArrayList<>(Collections.singletonList(value)));
       referenceIndex.get(indexSegmentStartOffset).put(id, value);
       if (expiresAtMs != Utils.Infinite_Time && expiresAtMs < time.milliseconds()) {
         expiredKeys.add(id);
@@ -247,6 +244,61 @@ class CuratedLogIndexState {
     return indexEntries;
   }
 
+  FileSpan makePermanent(MockId id) throws IOException, StoreException {
+    if (!allKeys.containsKey(id)) {
+      throw new IllegalArgumentException(id + " does not exist in the index");
+    } else if (expiredKeys.contains(id) || deletedKeys.contains(id)) {
+      throw new IllegalArgumentException(id + " is deleted or expired");
+    } else if (getExpectedValue(id, false).isFlagSet(IndexValue.Flags.Ttl_Update_Index)) {
+      throw new IllegalArgumentException(id + " ttl has already been updated");
+    }
+    byte[] dataWritten = appendToLog(CuratedLogIndexState.TTL_UPDATE_RECORD_SIZE);
+    Offset endOffsetOfPrevMsg = index.getCurrentEndOffset();
+    FileSpan fileSpan = log.getFileSpanForMessage(endOffsetOfPrevMsg, CuratedLogIndexState.TTL_UPDATE_RECORD_SIZE);
+    Offset startOffset = fileSpan.getStartOffset();
+    Offset indexSegmentStartOffset = generateReferenceIndexSegmentStartOffset(startOffset);
+    if (!referenceIndex.containsKey(indexSegmentStartOffset)) {
+      // rollover will occur
+      advanceTime(DELAY_BETWEEN_LAST_MODIFIED_TIMES_MS);
+      referenceIndex.put(indexSegmentStartOffset, new TreeMap<>());
+    }
+    IndexValue value = getExpectedValue(id, true);
+    IndexValue newValue =
+        new IndexValue(value.getSize(), value.getOffset(), value.getFlags(), Utils.Infinite_Time, time.milliseconds(),
+            value.getAccountId(), value.getContainerId());
+    newValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+    newValue.setNewOffset(startOffset);
+    newValue.setNewSize(CuratedLogIndexState.TTL_UPDATE_RECORD_SIZE);
+    IndexValue fromAdd = index.markAsPermanent(id, fileSpan, newValue.getOperationTimeInMs());
+    lastModifiedTimesInSecs.put(indexSegmentStartOffset,
+        TimeUnit.MILLISECONDS.toSeconds(newValue.getOperationTimeInMs()));
+    endOffsetOfPrevMsg = fileSpan.getEndOffset();
+
+    assertEquals("End Offset of index not as expected", endOffsetOfPrevMsg, index.getCurrentEndOffset());
+    assertEquals("Journal's last offset not as expected", startOffset, index.journal.getLastOffset());
+    ttlUpdatedKeys.add(id);
+
+    // add to two data structures unchanged
+    logOrder.put(startOffset, new Pair<>(id, new LogEntry(dataWritten, newValue)));
+    allKeys.get(id).add(newValue);
+
+    // while adding to the reference index, we must mimic the main index
+    IndexValue valueFromSegment = referenceIndex.get(indexSegmentStartOffset).get(id);
+    if (valueFromSegment != null) {
+      // new value doesn't replace the existing value but is "absorbed"
+      Offset relatedMsgOff = newValue.getOffset();
+      long expiresAtMs = newValue.getExpiresAtMs();
+      newValue = new IndexValue(valueFromSegment.getOffset().getName(), valueFromSegment.getBytes(),
+          valueFromSegment.getVersion());
+      newValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+      newValue.setExpiresAtMs(expiresAtMs);
+      newValue.setRelatedMessageOffset(relatedMsgOff);
+    }
+    assertEquals("Value added to index not as expected", newValue.getBytes(), fromAdd.getBytes());
+    referenceIndex.get(indexSegmentStartOffset).put(id, newValue);
+    return fileSpan;
+  }
+
   /**
    * Adds a delete entry in the index (real and reference) for {@code idToDelete}.
    * @param idToDelete the id to be deleted.
@@ -255,7 +307,7 @@ class CuratedLogIndexState {
    * @throws IOException
    * @throws StoreException
    */
-  FileSpan addDeleteEntry(MockId idToDelete) throws InterruptedException, IOException, StoreException {
+  FileSpan addDeleteEntry(MockId idToDelete) throws IOException, StoreException {
     return addDeleteEntry(idToDelete, null);
   }
 
@@ -268,8 +320,7 @@ class CuratedLogIndexState {
    * @throws IOException
    * @throws StoreException
    */
-  FileSpan addDeleteEntry(MockId idToDelete, MessageInfo info)
-      throws InterruptedException, IOException, StoreException {
+  FileSpan addDeleteEntry(MockId idToDelete, MessageInfo info) throws IOException, StoreException {
     byte[] dataWritten = appendToLog(CuratedLogIndexState.DELETE_RECORD_SIZE);
     Offset endOffsetOfPrevMsg = index.getCurrentEndOffset();
     FileSpan fileSpan = log.getFileSpanForMessage(endOffsetOfPrevMsg, CuratedLogIndexState.DELETE_RECORD_SIZE);
@@ -292,26 +343,25 @@ class CuratedLogIndexState {
     } else {
       newValue = new IndexValue(CuratedLogIndexState.DELETE_RECORD_SIZE, startOffset, Utils.Infinite_Time,
           info.getOperationTimeMs(), info.getAccountId(), info.getContainerId());
-      newValue.clearOriginalMessageOffset();
-      indexSegmentStartOffsets.put(idToDelete, new Pair<Offset, Offset>(null, null));
-      allKeys.put(idToDelete, new Pair<IndexValue, IndexValue>(null, null));
+      newValue.clearRelatedMessageOffset();
+      allKeys.put(idToDelete, new ArrayList<>());
       forcePut = true;
     }
     newValue.setFlag(IndexValue.Flags.Delete_Index);
     logOrder.put(startOffset, new Pair<>(idToDelete, new LogEntry(dataWritten, newValue)));
-    Pair<Offset, Offset> keyLocations = indexSegmentStartOffsets.get(idToDelete);
-    indexSegmentStartOffsets.put(idToDelete, new Pair<>(keyLocations.getFirst(), indexSegmentStartOffset));
-    Pair<IndexValue, IndexValue> keyValues = allKeys.get(idToDelete);
-    allKeys.put(idToDelete, new Pair<>(keyValues.getFirst(), newValue));
+    allKeys.get(idToDelete).add(newValue);
     referenceIndex.get(indexSegmentStartOffset).put(idToDelete, newValue);
     endOffsetOfPrevMsg = fileSpan.getEndOffset();
+    IndexValue fromAdd;
     if (forcePut) {
-      index.addToIndex(new IndexEntry(idToDelete, newValue), fileSpan);
+      fromAdd = index.addToIndex(new IndexEntry(idToDelete, newValue), fileSpan);
     } else {
-      index.markAsDeleted(idToDelete, fileSpan, newValue.getOperationTimeInMs());
+      fromAdd = index.markAsDeleted(idToDelete, fileSpan, newValue.getOperationTimeInMs());
     }
 
-    lastModifiedTimesInSecs.put(indexSegmentStartOffset, time.seconds());
+    assertEquals("Value added to index not as expected", newValue.getBytes(), fromAdd.getBytes());
+    lastModifiedTimesInSecs.put(indexSegmentStartOffset,
+        TimeUnit.MILLISECONDS.toSeconds(newValue.getOperationTimeInMs()));
     assertEquals("End Offset of index not as expected", endOffsetOfPrevMsg, index.getCurrentEndOffset());
     assertEquals("Journal's last offset not as expected", startOffset, index.journal.getLastOffset());
     if (!deletedKeys.contains(idToDelete)) {
@@ -323,14 +373,13 @@ class CuratedLogIndexState {
   /**
    * Advances time by {@code ms} and adjusts {@link #liveKeys} if any of the keys in it expire.
    * @param ms the amount in ms to advance.
-   * @throws InterruptedException
    */
-  void advanceTime(long ms) throws InterruptedException {
+  void advanceTime(long ms) {
     time.sleep(ms);
     Iterator<MockId> liveKeysIterator = liveKeys.iterator();
     while (liveKeysIterator.hasNext()) {
       MockId id = liveKeysIterator.next();
-      IndexValue value = allKeys.get(id).getFirst();
+      IndexValue value = allKeys.get(id).get(0);
       if (value.getExpiresAtMs() != Utils.Infinite_Time && value.getExpiresAtMs() < time.milliseconds()) {
         expiredKeys.add(id);
         liveKeysIterator.remove();
@@ -386,8 +435,67 @@ class CuratedLogIndexState {
    * @return the value that is expected to obtained from the {@link PersistentIndex}
    */
   IndexValue getExpectedValue(MockId id, boolean wantPut) {
-    Pair<IndexValue, IndexValue> indexValues = allKeys.get(id);
-    return wantPut || indexValues.getSecond() == null ? indexValues.getFirst() : indexValues.getSecond();
+    return getExpectedValue(id, wantPut, null);
+  }
+
+  /**
+   * Gets the value that is expected to obtained from the {@link PersistentIndex}.
+   * @param id the {@link MockId} whose value is required.
+   * @param wantPut {@code true} if the {@link IndexValue} of the PUT entry is required.
+   * @param fileSpan the {@link FileSpan} to search in. Can be {@code null}
+   * @return the value that is expected to obtained from the {@link PersistentIndex}
+   */
+  IndexValue getExpectedValue(MockId id, boolean wantPut, FileSpan fileSpan) {
+    List<IndexValue> indexValues = allKeys.get(id);
+    if (fileSpan != null) {
+      Offset modifiedStart = referenceIndex.floorKey(fileSpan.getStartOffset());
+      Offset modifiedEnd = new Offset(fileSpan.getEndOffset().getName(), fileSpan.getEndOffset().getOffset() + 1);
+      modifiedEnd = referenceIndex.ceilingKey(modifiedEnd);
+      if (modifiedEnd == null) {
+        modifiedEnd = index.getCurrentEndOffset();
+      }
+      fileSpan = new FileSpan(modifiedStart, modifiedEnd);
+    }
+    IndexValue earliest = null;
+    IndexValue latest = null;
+    for (IndexValue value : indexValues) {
+      if (earliest == null && (fileSpan == null || value.getOffset().compareTo(fileSpan.getStartOffset()) >= 0)) {
+        earliest = value;
+      }
+      if (fileSpan == null || value.getOffset().compareTo(fileSpan.getEndOffset()) < 0) {
+        latest = value;
+      }
+    }
+    IndexValue ret = null;
+    if (earliest != null && latest != null) {
+      if (wantPut) {
+        if (!earliest.isFlagSet(IndexValue.Flags.Delete_Index)) {
+          ret = referenceIndex.floorEntry(earliest.getOffset()).getValue().get(id);
+          if (ret == null || ret.isFlagSet(IndexValue.Flags.Delete_Index)) {
+            ret = earliest;
+          }
+        }
+      } else {
+        ret = referenceIndex.floorEntry(latest.getOffset()).getValue().get(id);
+        if (ret != null) {
+          long relatedMessageOffset = ret.getRelatedMessageOffset();
+          if (!ret.isFlagSet(IndexValue.Flags.Delete_Index) && ret.isFlagSet(IndexValue.Flags.Ttl_Update_Index) && (
+              relatedMessageOffset == IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET
+                  || relatedMessageOffset <= ret.getOffset().getOffset())) {
+            // this is a pure ttl update record and won't be returned by the real index.
+            ret = earliest;
+          }
+        }
+      }
+      if (ret != null) {
+        if (latest.getExpiresAtMs() != ret.getExpiresAtMs()) {
+          ret = new IndexValue(ret.getOffset().getName(), ret.getBytes(), ret.getVersion());
+          ret.setFlag(IndexValue.Flags.Ttl_Update_Index);
+          ret.setExpiresAtMs(latest.getExpiresAtMs());
+        }
+      }
+    }
+    return ret;
   }
 
   /**
@@ -397,9 +505,8 @@ class CuratedLogIndexState {
    * @return the value that is expected to obtained from the {@link PersistentIndex}
    */
   byte[] getExpectedData(MockId id, boolean wantPut) {
-    Pair<IndexValue, IndexValue> indexValues = allKeys.get(id);
-    Offset offset = wantPut ? indexValues.getFirst().getOffset() : indexValues.getSecond().getOffset();
-    return logOrder.get(offset).getSecond().buffer;
+    IndexValue value = getExpectedValue(id, wantPut);
+    return logOrder.get(value.getOffset()).getSecond().buffer;
   }
 
   /**
@@ -418,19 +525,46 @@ class CuratedLogIndexState {
   }
 
   /**
+   * Gets an ID to ttl update from the index segment with start offset {@code indexSegmentStartOffset}. The returned ID
+   * will have been added to {@link #ttlUpdatedKeys}. A call to {@link #makePermanent(MockId)} (MockId)} is expected.
+   * @param indexSegmentStartOffset the start offset of the index segment from which an ID is required.
+   * @return an ID to ttl update from the index segment with start offset {@code indexSegmentStartOffset}. {@code null}
+   * if there is no such candidate.
+   */
+  MockId getIdToTtlUpdateFromIndexSegment(Offset indexSegmentStartOffset) {
+    MockId updateCandidate = null;
+    TreeMap<MockId, IndexValue> indexSegment = referenceIndex.get(indexSegmentStartOffset);
+    for (Map.Entry<MockId, IndexValue> entry : indexSegment.entrySet()) {
+      MockId id = entry.getKey();
+      if (liveKeys.contains(id) && !ttlUpdatedKeys.contains(id)
+          && getExpectedValue(id, true).getExpiresAtMs() != Utils.Infinite_Time) {
+        updateCandidate = id;
+        break;
+      }
+    }
+    if (updateCandidate != null) {
+      ttlUpdatedKeys.add(updateCandidate);
+    }
+    return updateCandidate;
+  }
+
+  /**
    * Gets an ID to delete from the index segment with start offset {@code indexSegmentStartOffset}. The returned ID will
    * have been removed from {@link #liveKeys} and added to {@link #deletedKeys}. A call to
    * {@link #addDeleteEntry(MockId)} is expected.
    * @param indexSegmentStartOffset the start offset of the index segment from which an ID is required.
+   * @param updated if {@code true}, returns an ID that has been updated. Otherwise returns one that has not been
+   *                updated
    * @return an ID to delete from the index segment with start offset {@code indexSegmentStartOffset}. {@code null} if
    * there is no such candidate.
    */
-  MockId getIdToDeleteFromIndexSegment(Offset indexSegmentStartOffset) {
+  MockId getIdToDeleteFromIndexSegment(Offset indexSegmentStartOffset, boolean updated) {
     MockId deleteCandidate = null;
     TreeMap<MockId, IndexValue> indexSegment = referenceIndex.get(indexSegmentStartOffset);
     for (Map.Entry<MockId, IndexValue> entry : indexSegment.entrySet()) {
       MockId id = entry.getKey();
-      if (liveKeys.contains(id) && allKeys.get(id).getFirst().getExpiresAtMs() == Utils.Infinite_Time) {
+      if (liveKeys.contains(id) && getExpectedValue(id, true).getExpiresAtMs() == Utils.Infinite_Time
+          && updated == ttlUpdatedKeys.contains(id)) {
         deleteCandidate = id;
         break;
       }
@@ -442,16 +576,37 @@ class CuratedLogIndexState {
   }
 
   /**
+   * Gets an ID to ttl update from the given log segment. The returned ID will have been added to
+   * {@link #ttlUpdatedKeys}. A call to {@link #makePermanent(MockId)} (MockId)} is expected.
+   * @param segment the {@link LogSegment} from which an ID is required. {@code null} if there is no such candidate.
+   * @return the ID to ttl update.
+   */
+  MockId getIdToTtlUpdateFromLogSegment(LogSegment segment) {
+    MockId updateCandidate;
+    Offset indexSegmentStartOffset = new Offset(segment.getName(), segment.getStartOffset());
+    do {
+      updateCandidate = getIdToTtlUpdateFromIndexSegment(indexSegmentStartOffset);
+      indexSegmentStartOffset = referenceIndex.higherKey(indexSegmentStartOffset);
+      if (indexSegmentStartOffset == null || !indexSegmentStartOffset.getName().equals(segment.getName())) {
+        break;
+      }
+    } while (updateCandidate == null);
+    return updateCandidate;
+  }
+
+  /**
    * Gets an ID to delete from the given log segment. The returned ID will have been removed from {@link #liveKeys} and
    * added to {@link #deletedKeys}.
    * @param segment the {@link LogSegment} from which an ID is required. {@code null} if there is no such candidate.
+   * @param updated if {@code true}, returns an ID that has been updated. Otherwise returns one that has not been
+   *                updated
    * @return the ID to delete.
    */
-  MockId getIdToDeleteFromLogSegment(LogSegment segment) {
+  MockId getIdToDeleteFromLogSegment(LogSegment segment, boolean updated) {
     MockId deleteCandidate;
     Offset indexSegmentStartOffset = new Offset(segment.getName(), segment.getStartOffset());
     do {
-      deleteCandidate = getIdToDeleteFromIndexSegment(indexSegmentStartOffset);
+      deleteCandidate = getIdToDeleteFromIndexSegment(indexSegmentStartOffset, updated);
       indexSegmentStartOffset = referenceIndex.higherKey(indexSegmentStartOffset);
       if (indexSegmentStartOffset == null || !indexSegmentStartOffset.getName().equals(segment.getName())) {
         break;
@@ -503,7 +658,7 @@ class CuratedLogIndexState {
    */
   void verifyEntriesForHardDeletes(Set<MockId> deletedIds) throws IOException {
     for (MockId id : deletedIds) {
-      IndexValue putValue = allKeys.get(id).getFirst();
+      IndexValue putValue = getExpectedValue(id, true);
       if (putValue != null) {
         Offset offset = putValue.getOffset();
         LogSegment segment = log.getSegment(offset.getName());
@@ -526,7 +681,9 @@ class CuratedLogIndexState {
    * @return {@code true} if the {@code id} is considered deleted at {@code referenceTimeMs}. {@code false} otherwise.
    */
   boolean isDeletedAt(MockId id, long referenceTimeMs) {
-    Offset deleteIndexSegmentStartOffset = indexSegmentStartOffsets.get(id).getSecond();
+    IndexValue value = getExpectedValue(id, false);
+    Offset deleteIndexSegmentStartOffset =
+        value.isFlagSet(IndexValue.Flags.Delete_Index) ? referenceIndex.floorKey(value.getOffset()) : null;
     return deleteIndexSegmentStartOffset != null
         && lastModifiedTimesInSecs.get(deleteIndexSegmentStartOffset) * Time.MsPerSec < referenceTimeMs;
   }
@@ -538,7 +695,7 @@ class CuratedLogIndexState {
    * @return {@code true} if the {@code id} is considered expired at {@code referenceTimeMs}. {@code false} otherwise.
    */
   boolean isExpiredAt(MockId id, long referenceTimeMs) {
-    long expiresAtMs = allKeys.get(id).getFirst().getExpiresAtMs();
+    long expiresAtMs = getExpectedValue(id, false).getExpiresAtMs();
     return expiresAtMs != Utils.Infinite_Time && expiresAtMs < referenceTimeMs;
   }
 
@@ -552,6 +709,7 @@ class CuratedLogIndexState {
    */
   void verifyRealIndexSanity() throws IOException, StoreException {
     Map<MockId, Boolean> keyToDeleteSeenMap = new HashMap<>();
+    Map<MockId, Boolean> keyToTtlUpdateSeenMap = new HashMap<>();
     IndexSegment prevIndexSegment = null;
     for (IndexSegment indexSegment : index.getIndexSegments().values()) {
       Offset indexSegmentStartOffset = indexSegment.getStartOffset();
@@ -578,11 +736,19 @@ class CuratedLogIndexState {
         IndexValue value = indexSegment.find(id);
         indexEntries.add(new IndexEntry(id, value));
         Boolean deleteSeen = keyToDeleteSeenMap.get(id);
+        Boolean ttlUpdateSeen = keyToTtlUpdateSeenMap.get(id);
         if (info.isDeleted()) {
-          if (deleteSeen != null) {
-            assertFalse("Duplicated DELETE record for " + id, deleteSeen);
-          }
+          // should not be repeated
+          assertTrue("Duplicated DELETE record for " + id, deleteSeen == null || !deleteSeen);
+          assertTrue("Delete flag not set", value.isFlagSet(IndexValue.Flags.Delete_Index));
           keyToDeleteSeenMap.put(id, true);
+        } else if (value.isFlagSet(IndexValue.Flags.Ttl_Update_Index)) {
+          // should not be repeated
+          assertTrue("Duplicated TTL update record for " + id, ttlUpdateSeen == null || !ttlUpdateSeen);
+          // should not after a delete record
+          assertTrue("TTL update record after delete record for " + id, deleteSeen == null || !deleteSeen);
+          keyToTtlUpdateSeenMap.put(id, true);
+          keyToDeleteSeenMap.putIfAbsent(id, false);
         } else {
           if (deleteSeen != null) {
             if (deleteSeen) {
@@ -591,6 +757,8 @@ class CuratedLogIndexState {
               fail("Duplicated PUT record for " + id);
             }
           }
+          assertNull("Put record encountered after TTL update record", ttlUpdateSeen);
+          keyToTtlUpdateSeenMap.put(id, false);
           keyToDeleteSeenMap.put(id, false);
         }
       }
@@ -599,14 +767,16 @@ class CuratedLogIndexState {
         IndexValue value = entry.getValue();
         while (expectedOffset < indexSegment.getEndOffset().getOffset() && expectedOffset != value.getOffset()
             .getOffset()) {
-          // this might be because a PUT and DELETE entry are in the same segment.
+          // this might be because were squashed in the same segment.
           // find the record that should have been there
           // NOTE: This is NOT built to work after compaction (like the rest of this class). It will fail on a very
           // NOTE: specific corner case - where the PUT and DELETE entry for a blob ended up in the same index
           // NOTE: segment after compaction (the DELETE wasn't eligible to be "counted").
           Offset offset = new Offset(indexSegment.getLogSegmentName(), expectedOffset);
-          IndexValue putValue = logOrder.get(offset).getSecond().indexValue;
-          expectedOffset += putValue.getSize();
+          IndexValue missingValue = logOrder.get(offset).getSecond().indexValue;
+          assertFalse("A delete should not have been missing in the index",
+              missingValue.isFlagSet(IndexValue.Flags.Delete_Index));
+          expectedOffset += missingValue.getSize();
         }
         assertEquals("There are offsets in the log not accounted for in index", expectedOffset,
             value.getOffset().getOffset());
@@ -692,7 +862,6 @@ class CuratedLogIndexState {
     }
     logOrder.clear();
     referenceIndex.clear();
-    indexSegmentStartOffsets.clear();
     allKeys.clear();
     liveKeys.clear();
     expiredKeys.clear();
@@ -710,8 +879,7 @@ class CuratedLogIndexState {
    * @throws IOException
    * @throws StoreException
    */
-  private void setupTestState(boolean isLogSegmented, long segmentCapacity)
-      throws InterruptedException, IOException, StoreException {
+  private void setupTestState(boolean isLogSegmented, long segmentCapacity) throws IOException, StoreException {
     Offset expectedStartOffset = new Offset(log.getFirstSegment().getName(), log.getFirstSegment().getStartOffset());
     assertEquals("Start Offset of index not as expected", expectedStartOffset, index.getStartOffset());
     assertEquals("End Offset of index not as expected", log.getEndOffset(), index.getCurrentEndOffset());
@@ -719,20 +887,22 @@ class CuratedLogIndexState {
     // being picked for delete.
     advanceTime(Time.MsPerSec);
     assertEquals("Incorrect log segment count", 0, index.getLogSegmentCount());
+    boolean addTtlUpdates = true;
     long expectedUsedCapacity;
     if (!isLogSegmented) {
       // log is filled about ~50%.
-      addCuratedIndexEntriesToLogSegment(segmentCapacity / 2, 1);
+      addCuratedIndexEntriesToLogSegment(segmentCapacity / 2, 1, addTtlUpdates);
       expectedUsedCapacity = segmentCapacity / 2;
       assertEquals("Used capacity reported not as expected", expectedUsedCapacity, index.getLogUsedCapacity());
     } else {
       // first log segment is filled to capacity.
-      addCuratedIndexEntriesToLogSegment(segmentCapacity, 1);
+      addCuratedIndexEntriesToLogSegment(segmentCapacity, 1, addTtlUpdates);
       assertEquals("Used capacity reported not as expected", segmentCapacity, index.getLogUsedCapacity());
 
       // second log segment is filled but has some space at the end (free space has to be less than the lesser of the
       // standard delete and put record sizes so that the next write causes a roll over of log segments).
-      addCuratedIndexEntriesToLogSegment(segmentCapacity - (CuratedLogIndexState.DELETE_RECORD_SIZE - 1), 2);
+      addCuratedIndexEntriesToLogSegment(segmentCapacity - (CuratedLogIndexState.DELETE_RECORD_SIZE - 1), 2,
+          addTtlUpdates);
       assertEquals("Used capacity reported not as expected",
           2 * segmentCapacity - (CuratedLogIndexState.DELETE_RECORD_SIZE - 1), index.getLogUsedCapacity());
 
@@ -740,18 +910,44 @@ class CuratedLogIndexState {
       // First Index Segment
       // 1 PUT entry
       addPutEntries(1, CuratedLogIndexState.PUT_RECORD_SIZE, Utils.Infinite_Time);
-      // DELETE for a key in the first log segment
-      LogSegment segment = log.getFirstSegment();
-      MockId idToDelete = getIdToDeleteFromLogSegment(segment);
-      addDeleteEntry(idToDelete);
       assertEquals("Incorrect log segment count", 3, index.getLogSegmentCount());
+      // DELETE for a key in the first log segment
+      LogSegment firstSegment = log.getFirstSegment();
+      MockId idToDelete = getIdToDeleteFromLogSegment(firstSegment, false);
+      addDeleteEntry(idToDelete);
       // DELETE for a key in the second segment
-      segment = log.getNextSegment(segment);
-      idToDelete = getIdToDeleteFromLogSegment(segment);
+      LogSegment secondSegment = log.getNextSegment(firstSegment);
+      idToDelete = getIdToDeleteFromLogSegment(secondSegment, false);
       addDeleteEntry(idToDelete);
       // 1 DELETE for the PUT in the same segment
-      idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey());
+      idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey(), false);
       addDeleteEntry(idToDelete);
+
+      if (addTtlUpdates) {
+        // 1 TTL update for a key in first log segment
+        MockId idToUpdate = getIdToTtlUpdateFromLogSegment(firstSegment);
+        makePermanent(idToUpdate);
+        // 1 TTL update for a key in the second log segment
+        idToUpdate = getIdToTtlUpdateFromLogSegment(secondSegment);
+        makePermanent(idToUpdate);
+
+        // 1 TTL update for a key in first log segment
+        idToUpdate = getIdToTtlUpdateFromLogSegment(firstSegment);
+        makePermanent(idToUpdate);
+        // 1 DELETE for the key above
+        addDeleteEntry(idToUpdate);
+        // 1 TTL update for a key in second log segment
+        idToUpdate = getIdToTtlUpdateFromLogSegment(secondSegment);
+        makePermanent(idToUpdate);
+        // 1 DELETE for the key above
+        addDeleteEntry(idToUpdate);
+        // 1 DELETE for a key that's already ttl updated in the first log segment
+        idToDelete = getIdToDeleteFromLogSegment(firstSegment, true);
+        addDeleteEntry(idToDelete);
+        // 1 DELETE for a key that's already ttl updated in the first second segment
+        idToDelete = getIdToDeleteFromLogSegment(secondSegment, true);
+        addDeleteEntry(idToDelete);
+      }
       // 1 PUT entry that spans the rest of the data in the segment (upto a third of the segment size)
       long size = segmentCapacity / 3 - index.getCurrentEndOffset().getOffset();
       addPutEntries(1, size, Utils.Infinite_Time);
@@ -776,12 +972,12 @@ class CuratedLogIndexState {
    * @param sizeToMakeIndexEntriesFor the size to make index entries for.
    * @param expectedLogSegmentCount the number of log segments that are expected to assist after the addition of the
    *                                first entry and at the end of the addition of all entries.
-   * @throws InterruptedException
+   * @param addTtlUpdates if {@code true}, adds entries that update TTL.
    * @throws IOException
    * @throws StoreException
    */
-  private void addCuratedIndexEntriesToLogSegment(long sizeToMakeIndexEntriesFor, int expectedLogSegmentCount)
-      throws InterruptedException, IOException, StoreException {
+  private void addCuratedIndexEntriesToLogSegment(long sizeToMakeIndexEntriesFor, int expectedLogSegmentCount,
+      boolean addTtlUpdates) throws IOException, StoreException {
     // First Index Segment
     // 1 PUT
     Offset firstJournalEntryAddedNow =
@@ -799,14 +995,14 @@ class CuratedLogIndexState {
     // 4 PUT
     addPutEntries(4, CuratedLogIndexState.PUT_RECORD_SIZE, Utils.Infinite_Time);
     // 1 DELETE for a PUT in the same index segment
-    MockId idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey());
+    MockId idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey(), false);
     addDeleteEntry(idToDelete);
     // 5 more entries (for a total of 10) were added - firstJournalEntryAddedNow should still be a part of the journal
     entries = index.journal.getEntriesSince(firstJournalEntryAddedNow, true);
     assertEquals("There should have been exactly 10 entries returned from the journal", 10, entries.size());
     // 1 DELETE for a PUT in the first index segment
     Offset firstIndexSegmentStartOffset = referenceIndex.lowerKey(referenceIndex.lastKey());
-    idToDelete = getIdToDeleteFromIndexSegment(firstIndexSegmentStartOffset);
+    idToDelete = getIdToDeleteFromIndexSegment(firstIndexSegmentStartOffset, false);
     addDeleteEntry(idToDelete);
     // 1 more entry (for a total of 11) was added - firstJournalEntryAddedNow should no longer be a part of the journal
     assertNull("There should no entries returned from the journal",
@@ -833,18 +1029,77 @@ class CuratedLogIndexState {
     // 1 PUT entry
     addPutEntries(1, CuratedLogIndexState.PUT_RECORD_SIZE, Utils.Infinite_Time);
     // 1 DELETE for a PUT in each of the third and fourth segments
-    idToDelete = getIdToDeleteFromIndexSegment(thirdIndexSegmentStartOffset);
+    idToDelete = getIdToDeleteFromIndexSegment(thirdIndexSegmentStartOffset, false);
     addDeleteEntry(idToDelete);
-    idToDelete = getIdToDeleteFromIndexSegment(fourthIndexSegmentStartOffset);
+    idToDelete = getIdToDeleteFromIndexSegment(fourthIndexSegmentStartOffset, false);
     addDeleteEntry(idToDelete);
     // 1 DELETE for the PUT in the same segment
-    idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey());
+    idToDelete = getIdToDeleteFromIndexSegment(referenceIndex.lastKey(), false);
     addDeleteEntry(idToDelete);
     // 1 DELETE for a PUT entry that does not exist
     MockId uniqueId = getUniqueId();
     addDeleteEntry(uniqueId,
         new MessageInfo(uniqueId, Integer.MAX_VALUE, Utils.Infinite_Time, Utils.getRandomShort(TestUtils.RANDOM),
             Utils.getRandomShort(TestUtils.RANDOM), time.milliseconds()));
+    // Temporary code while other classes are upgraded to understand TTL updates. Once other classes do, the
+    // variable "addTtlUpdates" will be dropped
+    if (addTtlUpdates) {
+      long expiresAtMs = time.milliseconds() + TimeUnit.HOURS.toMillis(1);
+      // 1 PUT with non zero expire time
+      addPutEntries(1, PUT_RECORD_SIZE, expiresAtMs);
+
+      List<MockId> idsToDelete = new ArrayList<>();
+      // sixth index segment
+      Offset prevIndSegStartOff = referenceIndex.lastKey();
+      // 3 PUT with non zero expire time
+      addPutEntries(3, PUT_RECORD_SIZE, expiresAtMs);
+      // 2 TTL updates for a PUTs in the same segment
+      MockId idToUpdate = getIdToTtlUpdateFromIndexSegment(referenceIndex.lastKey());
+      makePermanent(idToUpdate);
+      idsToDelete.add(idToUpdate);
+      makePermanent(getIdToTtlUpdateFromIndexSegment(referenceIndex.lastKey()));
+      // 1 TTL update for a PUT in the previous segment
+      idToUpdate = getIdToTtlUpdateFromIndexSegment(prevIndSegStartOff);
+      makePermanent(idToUpdate);
+      idsToDelete.add(idToUpdate);
+      // 1 more PUT with non zero expire time
+      addPutEntries(1, PUT_RECORD_SIZE, expiresAtMs);
+
+      // seventh index segment
+      prevIndSegStartOff = referenceIndex.lastKey();
+      // 1 TTL update for a PUT in the prev segment
+      makePermanent(getIdToTtlUpdateFromIndexSegment(prevIndSegStartOff));
+      // 1 PUT, TTL update, DELETE in the same segment
+      addPutEntries(1, PUT_RECORD_SIZE, expiresAtMs);
+      idToUpdate = getIdToTtlUpdateFromIndexSegment(referenceIndex.lastKey());
+      makePermanent(idToUpdate);
+      addDeleteEntry(idToUpdate);
+      // 1 TTL update and DELETE for a PUT in prev segment
+      makePermanent(getIdToTtlUpdateFromIndexSegment(prevIndSegStartOff));
+      // 2 DELETES from idsToDelete
+      assertEquals("Number of IDs to delete has changed", 2, idsToDelete.size());
+      for (MockId id : idsToDelete) {
+        addDeleteEntry(id);
+      }
+
+      // eighth index segment
+      // 1 orphaned TTL update record (with no delete)
+      // 1 orphaned TTL update record (with delete in the same index segment)
+      // 1 DELETE for the record above
+      // 1 orphaned TTL update record (with delete in another index segment)
+      // 1 PUT
+
+      // ninth index segment
+      // 1 DELETE for an orphaned TTL update record above
+      // 2 PUTs with infinite TTL
+      // 2 PUTs with finite TTL
+
+      // tenth index segment (setting up for cross log segment if required)
+      // 4 PUTs
+      addPutEntries(4, PUT_RECORD_SIZE, expiresAtMs);
+      // 1 TTL updates for a key in this segment
+      makePermanent(getIdToTtlUpdateFromIndexSegment(referenceIndex.lastKey()));
+    }
     // 1 PUT entry that spans the rest of the data in the segment
     long size = sizeToMakeIndexEntriesFor - index.getCurrentEndOffset().getOffset();
     addPutEntries(1, size, Utils.Infinite_Time);
@@ -881,8 +1136,8 @@ class CuratedLogIndexState {
         assertEquals("Size does not match", referenceValue.getSize(), value.getSize());
         assertEquals("Account ID does not match", referenceValue.getAccountId(), value.getAccountId());
         assertEquals("Container ID does not match", referenceValue.getContainerId(), value.getContainerId());
-        assertEquals("Original message offset does not match", referenceValue.getOriginalMessageOffset(),
-            value.getOriginalMessageOffset());
+        assertEquals("Original message offset does not match", referenceValue.getRelatedMessageOffset(),
+            value.getRelatedMessageOffset());
         assertEquals("Flags do not match", referenceValue.getFlags(), value.getFlags());
         if (index.hardDeleter.enabled.get() && !deletedKeys.contains(referenceIndexSegmentEntry.getKey())) {
           assertEquals("Operation time does not match", referenceValue.getOperationTimeInMs(),
@@ -895,7 +1150,7 @@ class CuratedLogIndexState {
     assertNull("There should no more index segments left", realIndexEntry);
     // all the elements in the last segment should be in the journal
     assertNotNull("There is no offset in the log that corresponds to the last index segment start offset",
-        logOrder.floorEntry(referenceIndex.lastKey()));
+        logOrder.get(referenceIndex.lastKey()));
     Map.Entry<Offset, Pair<MockId, LogEntry>> logEntry = logOrder.floorEntry(referenceIndex.lastKey());
     List<JournalEntry> entries = index.journal.getEntriesSince(referenceIndex.lastKey(), true);
     for (JournalEntry entry : entries) {
@@ -931,7 +1186,8 @@ class CuratedLogIndexState {
     Map.Entry<Offset, TreeMap<MockId, IndexValue>> lastEntry = referenceIndex.lastEntry();
     Offset indexSegmentStartOffset = lastEntry.getKey();
     if (!indexSegmentStartOffset.getName().equals(recordOffset.getName())
-        || lastEntry.getValue().size() == CuratedLogIndexState.MAX_IN_MEM_ELEMENTS) {
+        || lastEntry.getValue().size() == CuratedLogIndexState.MAX_IN_MEM_ELEMENTS || (index.journal.isFull()
+        && index.journal.getFirstOffset().compareTo(indexSegmentStartOffset) >= 0)) {
       indexSegmentStartOffset = recordOffset;
     }
     return indexSegmentStartOffset;
@@ -956,12 +1212,12 @@ class CuratedLogIndexState {
         if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
           // delete record is always valid
           validEntries.add(new IndexEntry(key, value));
-          if (value.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
-              && value.getOriginalMessageOffset() != value.getOffset().getOffset()
-              && value.getOriginalMessageOffset() >= indexSegmentStartOffset.getOffset() && !isDeletedAt(key,
+          if (value.getRelatedMessageOffset() != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET
+              && value.getRelatedMessageOffset() != value.getOffset().getOffset()
+              && value.getRelatedMessageOffset() >= indexSegmentStartOffset.getOffset() && !isDeletedAt(key,
               deleteReferenceTimeMs) && !isExpiredAt(key, expiryReferenceTimeMs)) {
             // delete is irrelevant but it's in the same index segment as the put and the put is still valid
-            validEntries.add(new IndexEntry(key, allKeys.get(key).getFirst()));
+            validEntries.add(new IndexEntry(key, getExpectedValue(key, true)));
           }
         } else if (!isExpiredAt(key, expiryReferenceTimeMs)) {
           // unexpired

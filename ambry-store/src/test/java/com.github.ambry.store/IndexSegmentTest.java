@@ -35,6 +35,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.After;
 import org.junit.Test;
@@ -56,6 +57,7 @@ public class IndexSegmentTest {
       new MockId(UtilsTest.getRandomString(CUSTOM_ID_SIZE + CUSTOM_ID_SIZE / 2)).sizeInBytes();
   private static final StoreConfig STORE_CONFIG = new StoreConfig(new VerifiableProperties(new Properties()));
   private static final Time time = new MockTime();
+  private static final long TTL_UPDATE_FILE_SPAN_SIZE = 7;
   private static final long DELETE_FILE_SPAN_SIZE = 10;
   private static final StoreKeyFactory STORE_KEY_FACTORY;
 
@@ -142,11 +144,21 @@ public class IndexSegmentTest {
     IndexValue value3 =
         IndexValueTest.getIndexValue(1000, new Offset(logSegmentName, 2000), Utils.Infinite_Time, time.milliseconds(),
             serviceId, containerId, version);
+    IndexValue value4 = new IndexValue(logSegmentName, value2.getBytes(), version);
+    value4.setFlag(IndexValue.Flags.Ttl_Update_Index);
+    value4.setNewOffset(new Offset(logSegmentName, 3000));
+    value4.setNewSize(500);
     IndexSegment indexSegment = generateIndexSegment(startOffset);
+    Map<MockId, IndexValue> expectedValues = new HashMap<>();
     // inserting in the opposite order by design to ensure that writes are based on offset ordering and not key ordering
     indexSegment.addEntry(new IndexEntry(id3, value1), new Offset(logSegmentName, 1000));
+    expectedValues.put(id3, value1);
     indexSegment.addEntry(new IndexEntry(id2, value2), new Offset(logSegmentName, 2000));
+    expectedValues.put(id2, value2);
     indexSegment.addEntry(new IndexEntry(id1, value3), new Offset(logSegmentName, 3000));
+    expectedValues.put(id1, value3);
+    // this will result in the related message offset in the put value (value2) to get updated
+    indexSegment.addEntry(new IndexEntry(id2, value4), new Offset(logSegmentName, 3500));
 
     // provide end offset such that nothing is written
     indexSegment.writeIndexSegmentToFile(new Offset(prevLogSegmentName, 0));
@@ -164,14 +176,33 @@ public class IndexSegmentTest {
         Journal journal = new Journal(tempDir.getAbsolutePath(), 3, 3);
         IndexSegment fromDisk =
             new IndexSegment(indexSegment.getFile(), false, STORE_KEY_FACTORY, STORE_CONFIG, metrics, journal, time);
+        assertEquals("End offset not as expected", new Offset(logSegmentName, safeEndPoint), fromDisk.getEndOffset());
         for (MockId id : shouldBeFound) {
-          assertNotNull("Value for key should have been found", fromDisk.find(id));
+          IndexValue value = fromDisk.find(id);
+          assertNotNull("Value for key should have been found", value);
+          // since the safeendpoint does not include the related message offset that was added to value2, the value
+          // from the index segment must be as if the update never happened
+          assertArrayEquals("Value should match", expectedValues.get(id).getBytes().array(), value.getBytes().array());
         }
         for (MockId id : shouldNotBeFound) {
           assertNull("Value for key should not have been found", fromDisk.find(id));
         }
       }
     }
+    // now provide safe endpoint such that the related message offset will be written too
+    indexSegment.writeIndexSegmentToFile(new Offset(logSegmentName, 3500));
+    Journal journal = new Journal(tempDir.getAbsolutePath(), 3, 3);
+    IndexSegment fromDisk =
+        new IndexSegment(indexSegment.getFile(), false, STORE_KEY_FACTORY, STORE_CONFIG, metrics, journal, time);
+    IndexValue value = fromDisk.find(id1);
+    assertArrayEquals("Value should match", expectedValues.get(id1).getBytes().array(), value.getBytes().array());
+    value = fromDisk.find(id3);
+    assertArrayEquals("Value should match", expectedValues.get(id3).getBytes().array(), value.getBytes().array());
+    IndexValue expectedValue = expectedValues.get(id2);
+    expectedValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+    expectedValue.setRelatedMessageOffset(value4.getOffset());
+    value = fromDisk.find(id2);
+    assertArrayEquals("Value should match", expectedValue.getBytes().array(), value.getBytes().array());
   }
 
   // helpers
@@ -237,9 +268,23 @@ public class IndexSegmentTest {
       verifyFind(referenceIndex, indexSegment);
       verifyGetEntriesSince(referenceIndex, indexSegment);
 
+      int extraIdsToTtlUpdate = 10;
+      Set<MockId> idsToTtlUpdate = getIdsToTtlUpdate(referenceIndex, extraIdsToTtlUpdate);
+      Map<Offset, MockId> extraOffsetsToCheck = addTtlUpdateEntries(idsToTtlUpdate, indexSegment, referenceIndex);
+      endOffset += idsToTtlUpdate.size() * TTL_UPDATE_FILE_SPAN_SIZE;
+      numItems += extraIdsToTtlUpdate;
+      expectedSizeWritten += extraIdsToTtlUpdate * (KEY_SIZE + valueSize);
+      verifyIndexSegmentDetails(indexSegment, startOffset, numItems, expectedSizeWritten, false, endOffset,
+          time.milliseconds(), resetKey);
+      verifyFind(referenceIndex, indexSegment);
+      verifyGetEntriesSince(referenceIndex, indexSegment);
+      indexSegment.writeIndexSegmentToFile(indexSegment.getEndOffset());
+      verifyReadFromFile(referenceIndex, indexSegment.getFile(), startOffset, numItems, expectedSizeWritten, endOffset,
+          time.milliseconds(), resetKey, extraOffsetsToCheck);
+
       int extraIdsToDelete = 10;
       Set<MockId> idsToDelete = getIdsToDelete(referenceIndex, extraIdsToDelete);
-      Map<Offset, MockId> extraOffsetsToCheck = addDeleteEntries(idsToDelete, indexSegment, referenceIndex);
+      addDeleteEntries(idsToDelete, indexSegment, referenceIndex, extraOffsetsToCheck);
       endOffset += idsToDelete.size() * DELETE_FILE_SPAN_SIZE;
       numItems += extraIdsToDelete;
       expectedSizeWritten += extraIdsToDelete * (KEY_SIZE + valueSize);
@@ -327,10 +372,9 @@ public class IndexSegmentTest {
       } while (referenceIndex.containsKey(id));
       long offset = offsets.get(i);
       long size = i == offsets.size() - 1 ? lastEntrySize : offsets.get(i + 1) - offset;
-      IndexValue value =
-          IndexValueTest.getIndexValue(size, new Offset(segment.getLogSegmentName(), offset), Utils.Infinite_Time,
-              time.milliseconds(), Utils.getRandomShort(TestUtils.RANDOM), Utils.getRandomShort(TestUtils.RANDOM),
-              version);
+      IndexValue value = IndexValueTest.getIndexValue(size, new Offset(segment.getLogSegmentName(), offset),
+          time.milliseconds() + TimeUnit.HOURS.toMillis(1), time.milliseconds(), id.getAccountId(), id.getContainerId(),
+          version);
       IndexEntry entry = new IndexEntry(id, value);
       segment.addEntry(entry, new Offset(segment.getLogSegmentName(), offset + size));
       addedEntries.add(entry);
@@ -396,11 +440,16 @@ public class IndexSegmentTest {
       IndexValue referenceValue = entry.getValue();
       IndexValue valueFromSegment = segment.find(entry.getKey());
       assertNotNull("Value obtained from segment is null", valueFromSegment);
-      assertEquals("Offset is not equal", referenceValue.getOffset(), valueFromSegment.getOffset());
+      if (!referenceValue.getOffset().equals(valueFromSegment.getOffset())) {
+        assertEquals("Offset is not equal", referenceValue.getOffset(), valueFromSegment.getOffset());
+      }
       assertEquals("Value is not equal", referenceValue.getBytes(), valueFromSegment.getBytes());
     }
     // try to find a key that does not exist.
-    MockId id = new MockId(UtilsTest.getRandomString(CUSTOM_ID_SIZE));
+    MockId id;
+    do {
+      id = new MockId(UtilsTest.getRandomString(CUSTOM_ID_SIZE));
+    } while (referenceIndex.containsKey(id));
     assertNull("Should have failed to find non existent key", segment.find(id));
   }
 
@@ -498,7 +547,31 @@ public class IndexSegmentTest {
   }
 
   /**
-   * Gets some IDs for deleting. Picks alternate IDs from {@code referenceIndex} and randomly generates
+   * Gets some IDs for ttl update. Picks the first half of ids from {@code referenceIndex} and also randomly generates
+   * {@code outOfSegmentIdCount} ids.
+   * @param referenceIndex the index entries to pick for ttl update from.
+   * @param outOfSegmentIdCount the number of ids to be generated that are not in {@code referenceIndex}.
+   * @return a {@link Set} of IDs to create ttl update entries for.
+   */
+  private Set<MockId> getIdsToTtlUpdate(NavigableMap<MockId, IndexValue> referenceIndex, int outOfSegmentIdCount) {
+    Set<MockId> idsToTtlUpdate = new HashSet<>();
+    // return the first half of ids in the map
+    int needed = referenceIndex.size() / 2;
+    int current = 0;
+    for (MockId id : referenceIndex.keySet()) {
+      if (current >= needed) {
+        break;
+      }
+      idsToTtlUpdate.add(id);
+      current++;
+    }
+    // generate some ids for ttl update
+    idsToTtlUpdate.addAll(generateIds(referenceIndex, outOfSegmentIdCount));
+    return idsToTtlUpdate;
+  }
+
+  /**
+   * Gets some IDs for deleting. Picks alternate IDs from {@code referenceIndex} and also randomly generates
    * {@code outOfSegmentIdCount} ids.
    * @param referenceIndex the index entries to pick for delete from.
    * @param outOfSegmentIdCount the number of ids to be generated that are not in {@code referenceIndex}.
@@ -515,40 +588,104 @@ public class IndexSegmentTest {
       include = !include;
     }
     // generate some ids for delete
-    for (int i = 0; i < outOfSegmentIdCount; i++) {
-      MockId id;
-      do {
-        id = new MockId(UtilsTest.getRandomString(CUSTOM_ID_SIZE));
-      } while (idsToDelete.contains(id));
-      idsToDelete.add(id);
-    }
+    idsToDelete.addAll(generateIds(referenceIndex, outOfSegmentIdCount));
     return idsToDelete;
   }
 
   /**
-   * Adds delete entries to {@code segment.}
+   * Generates {@code count} unique ids that arent in {@code referenceIndex}.
+   * @param referenceIndex the current reference index
+   * @param count the number of unique ids to generate
+   * @return a set with {@code count} unique ids
+   */
+  private Set<MockId> generateIds(NavigableMap<MockId, IndexValue> referenceIndex, int count) {
+    Set<MockId> generatedIds = new HashSet<>();
+    for (int i = 0; i < count; i++) {
+      MockId id;
+      do {
+        id = new MockId(UtilsTest.getRandomString(CUSTOM_ID_SIZE));
+      } while (referenceIndex.containsKey(id) || generatedIds.contains(id));
+      generatedIds.add(id);
+    }
+    return generatedIds;
+  }
+
+  /**
+   * Adds ttl update entries to {@code segment}.
+   * @param idsToTtlUpdate the {@link Set} of IDs to create ttl update entries for.
+   * @param segment the {@link IndexSegment} to add the entries to.
+   * @param referenceIndex the {@link NavigableMap} to add all the entries to. This represents the source of truth for
+   *                       all checks.
+   * @return a {@link Map} that defines the offsets of keys whose index entries have been replaced or not added
+   * owing to the fact that the put and ttl update both occurred in the same index segment.
+   * @throws StoreException
+   */
+  private Map<Offset, MockId> addTtlUpdateEntries(Set<MockId> idsToTtlUpdate, IndexSegment segment,
+      NavigableMap<MockId, IndexValue> referenceIndex) throws StoreException {
+    Map<Offset, MockId> offsetsToCheck = new HashMap<>();
+    for (MockId id : idsToTtlUpdate) {
+      Offset offset = segment.getEndOffset();
+      IndexValue value = segment.find(id);
+      boolean willBeAddedUnchanged;
+      if (value == null) {
+        // create an index value with a random log segment name
+        value = IndexValueTest.getIndexValue(1, new Offset(UtilsTest.getRandomString(1), 0), Utils.Infinite_Time,
+            time.milliseconds(), id.getAccountId(), id.getContainerId(), version);
+        willBeAddedUnchanged = true;
+      } else {
+        // if in this segment, add the offset of the ttl update to offsetsToCheck so that we can verify that these
+        // exist in the journal later
+        offsetsToCheck.put(offset, id);
+        willBeAddedUnchanged = false;
+      }
+      IndexValue newValue = IndexValueTest.getIndexValue(value, version);
+      newValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+      newValue.setExpiresAtMs(Utils.Infinite_Time);
+      newValue.setNewOffset(offset);
+      newValue.setNewSize(TTL_UPDATE_FILE_SPAN_SIZE);
+      segment.addEntry(new IndexEntry(id, newValue),
+          new Offset(offset.getName(), offset.getOffset() + TTL_UPDATE_FILE_SPAN_SIZE));
+
+      IndexValue referenceValue = newValue;
+      if (!willBeAddedUnchanged) {
+        referenceValue = new IndexValue(value.getOffset().getName(), value.getBytes(), version);
+        referenceValue.setFlag(IndexValue.Flags.Ttl_Update_Index);
+        referenceValue.setExpiresAtMs(Utils.Infinite_Time);
+        referenceValue.setRelatedMessageOffset(newValue.getOffset());
+      }
+      referenceIndex.put(id, referenceValue);
+    }
+    return offsetsToCheck;
+  }
+
+  /**
+   * Adds delete entries to {@code segment}.
    * @param idsToDelete the {@link Set} of IDs to create delete entries for.
    * @param segment the {@link IndexSegment} to add the entries to.
-   * @param referenceIndex the {@link NavigableMap} to add all the entries to. This repreents the source of truth for
+   * @param referenceIndex the {@link NavigableMap} to add all the entries to. This represents the source of truth for
    *                       all checks.
-   * @return a {@link Map} that defines the put record offsets of keys whose index entries have been replaced by delete
-   * entries owing to the fact that the put and delete both occurred in the same index segment.
+   * @return a {@link Map} that defines the record offsets of keys whose index entries have been replaced by delete
+   * entries owing to the fact that the delete occurred in the same index segment as the previous record.
    * @throws StoreException
    */
   private Map<Offset, MockId> addDeleteEntries(Set<MockId> idsToDelete, IndexSegment segment,
-      NavigableMap<MockId, IndexValue> referenceIndex) throws StoreException {
-    Map<Offset, MockId> putRecordOffsets = new HashMap<>();
+      NavigableMap<MockId, IndexValue> referenceIndex, Map<Offset, MockId> offsetsToCheck) throws StoreException {
     for (MockId id : idsToDelete) {
       Offset offset = segment.getEndOffset();
       IndexValue value = segment.find(id);
       if (value == null) {
         // create an index value with a random log segment name
         value = IndexValueTest.getIndexValue(1, new Offset(UtilsTest.getRandomString(1), 0), Utils.Infinite_Time,
-            time.milliseconds(), Utils.getRandomShort(TestUtils.RANDOM), Utils.getRandomShort(TestUtils.RANDOM),
-            version);
+            time.milliseconds(), id.getAccountId(), id.getContainerId(), version);
       } else {
-        // if in this segment, add to putRecordOffsets so that journal can verify these later
-        putRecordOffsets.put(value.getOffset(), id);
+        // if in this segment, add to offsetsToCheck so that journal can verify these later
+        offsetsToCheck.put(value.getOffset(), id);
+        if (value.isFlagSet(IndexValue.Flags.Ttl_Update_Index) && value.getRelatedMessageOffset() > value.getOffset()
+            .getOffset()) {
+          // the offset of the ttl update record that was added as a related message offset in the put index entry
+          // will no longer show up anywhere and will not be added to the journal.
+          offsetsToCheck.remove(new Offset(segment.getLogSegmentName(), value.getRelatedMessageOffset()));
+        }
       }
       IndexValue newValue = IndexValueTest.getIndexValue(value, version);
       newValue.setFlag(IndexValue.Flags.Delete_Index);
@@ -558,7 +695,7 @@ public class IndexSegmentTest {
           new Offset(offset.getName(), offset.getOffset() + DELETE_FILE_SPAN_SIZE));
       referenceIndex.put(id, newValue);
     }
-    return putRecordOffsets;
+    return offsetsToCheck;
   }
 
   /**
@@ -633,6 +770,9 @@ public class IndexSegmentTest {
     assertEquals("Keys seen does not match keys in reference index", seenKeys.size(), referenceIndex.size());
     seenKeys.containsAll(referenceIndex.keySet());
     if (extraEntriesCheckState != null) {
+      if (extraEntriesCheckState.values().contains(false)) {
+        System.out.println(extraEntriesCheckState);
+      }
       assertFalse("One of the extraOffsetsToCheck was not found", extraEntriesCheckState.values().contains(false));
     }
   }
