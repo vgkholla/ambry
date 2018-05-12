@@ -458,7 +458,7 @@ class IndexSegment {
       logger.trace("IndexSegment {} inserting key - {} value - offset {} size {} ttl {} "
               + "originalMessageOffset {} fileEndOffset {}", indexFile.getAbsolutePath(), entry.getKey(),
           entry.getValue().getOffset(), entry.getValue().getSize(), entry.getValue().getExpiresAtMs(),
-          entry.getValue().getOriginalMessageOffset(), fileEndOffset);
+          entry.getValue().getRelatedMessageOffset(), fileEndOffset);
       boolean isPresent = index.containsKey(entry.getKey());
       index.computeIfAbsent(entry.getKey(), key -> new ConcurrentSkipListSet<>(INDEX_VALUE_COMPARATOR))
           .add(entry.getValue());
@@ -466,6 +466,8 @@ class IndexSegment {
         bloomFilter.add(ByteBuffer.wrap(entry.getKey().toBytes()));
       }
       if (resetKey == null) {
+        // even if it is TTL update entry, we set the "reset" key as the PUT record. Reset key is intended only to
+        // be a hint so this does not affect correctness.
         resetKey = new Pair<>(entry.getKey(),
             entry.getValue().isFlagSet(IndexValue.Flags.Delete_Index) ? PersistentIndex.IndexEntryType.DELETE
                 : PersistentIndex.IndexEntryType.PUT);
@@ -809,13 +811,13 @@ class IndexSegment {
             bloomFilter.add(ByteBuffer.wrap(key.toBytes()));
           }
           // add to the journal
-          long oMsgOff = blobValue.getOriginalMessageOffset();
-          if (oMsgOff != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET && offsetInLogSegment != oMsgOff
+          long oMsgOff = blobValue.getRelatedMessageOffset();
+          if (oMsgOff != IndexValue.UNKNOWN_RELATED_MESSAGE_OFFSET && offsetInLogSegment != oMsgOff
               && oMsgOff >= startOffset.getOffset()
               && journal.getKeyAtOffset(new Offset(startOffset.getName(), oMsgOff)) == null) {
             // we add an entry for the original message offset if it is within the same index segment and
             // an entry is not already in the journal
-            journal.addEntry(new Offset(startOffset.getName(), blobValue.getOriginalMessageOffset()), key);
+            journal.addEntry(new Offset(startOffset.getName(), blobValue.getRelatedMessageOffset()), key);
           }
           journal.addEntry(blobValue.getOffset(), key);
           // sizeWritten is only used for in-memory segments, and for those the padding does not come into picture.
@@ -958,8 +960,23 @@ class IndexSegment {
    * @param entries the entries to eliminate duplicates from.
    */
   private void eliminateDuplicates(List<IndexEntry> entries) {
-    Set<StoreKey> setToFindDuplicate = new HashSet<StoreKey>();
-    ListIterator<IndexEntry> iterator = entries.listIterator(entries.size());
+    Set<StoreKey> setToFindDuplicate = new HashSet<>();
+    ListIterator<IndexEntry> iterator;
+    // first choose PUTs over update entries (omitting DELETEs)
+    iterator = entries.listIterator();
+    while (iterator.hasNext()) {
+      IndexEntry entry = iterator.next();
+      if (!entry.getValue().isFlagSet(IndexValue.Flags.Delete_Index)) {
+        if (setToFindDuplicate.contains(entry.getKey())) {
+          iterator.remove();
+        } else {
+          setToFindDuplicate.add(entry.getKey());
+        }
+      }
+    }
+    // then choose DELETEs over all other entries
+    setToFindDuplicate.clear();
+    iterator = entries.listIterator(entries.size());
     while (iterator.hasPrevious()) {
       IndexEntry entry = iterator.previous();
       if (setToFindDuplicate.contains(entry.getKey())) {
