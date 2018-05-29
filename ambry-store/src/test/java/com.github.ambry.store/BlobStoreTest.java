@@ -877,8 +877,9 @@ public class BlobStoreTest {
     for (int i = 0; i < count; i++) {
       MockId id = getUniqueId(accountId, containerId);
       long crc = random.nextLong();
-      MessageInfo info = new MessageInfo(id, size, false, false, expiresAtMs, crc, id.getAccountId(), id.getContainerId(),
-          Utils.Infinite_Time);
+      MessageInfo info =
+          new MessageInfo(id, size, false, false, expiresAtMs, crc, id.getAccountId(), id.getContainerId(),
+              Utils.Infinite_Time);
       ByteBuffer buffer = ByteBuffer.wrap(TestUtils.getRandomBytes((int) size));
       ids.add(id);
       infos.add(info);
