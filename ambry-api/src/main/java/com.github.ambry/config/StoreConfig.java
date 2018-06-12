@@ -223,6 +223,15 @@ public class StoreConfig {
   public static final String storeReadWriteEnableSizeThresholdPercentageDeltaName =
       "store.read.write.enable.size.threshold.percentage.delta";
 
+  /**
+   * Specifies the size threshold delta below {@link #storeReadOnlyEnableSizeThresholdPercentageName} that a store will be
+   * converted from RO to RW
+   */
+  @Config(storeTtlUpdateBufferTimeSecondsName)
+  @Default("60 * 60 * 24")
+  public final int storeTtlUpdateBufferTimeSeconds;
+  public static final String storeTtlUpdateBufferTimeSecondsName = "store.ttl.update.buffer.time.seconds";
+
   public StoreConfig(VerifiableProperties verifiableProperties) {
 
     storeKeyFactory = verifiableProperties.getString("store.key.factory", "com.github.ambry.commons.BlobIdFactory");
@@ -239,8 +248,7 @@ public class StoreConfig {
         verifiableProperties.getIntInRange("store.cleanup.operations.bytes.per.sec", 1 * 1024 * 1024, 1,
             Integer.MAX_VALUE);
     storeCompactionMinBufferSize =
-        verifiableProperties.getIntInRange("store.compaction.min.buffer.size", 10 * 1024 * 1024, 0,
-            Integer.MAX_VALUE);
+        verifiableProperties.getIntInRange("store.compaction.min.buffer.size", 10 * 1024 * 1024, 0, Integer.MAX_VALUE);
     storeEnableHardDelete = verifiableProperties.getBoolean("store.enable.hard.delete", false);
     storeSegmentSizeInBytes =
         verifiableProperties.getLongInRange("store.segment.size.in.bytes", Long.MAX_VALUE, 1, Long.MAX_VALUE);
@@ -270,6 +278,8 @@ public class StoreConfig {
         verifiableProperties.getIntInRange(storeReadWriteEnableSizeThresholdPercentageDeltaName, 5, 0,
             storeReadOnlyEnableSizeThresholdPercentage);
     storeValidateAuthorization = verifiableProperties.getBoolean("store.validate.authorization", false);
+    storeTtlUpdateBufferTimeSeconds =
+        verifiableProperties.getIntInRange(storeTtlUpdateBufferTimeSecondsName, 60 * 60 * 24, 0, Integer.MAX_VALUE);
   }
 }
 

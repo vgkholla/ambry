@@ -32,5 +32,6 @@ public enum StoreErrorCodes {
   Index_Version_Error,
   Authorization_Failure,
   Unknown_Error,
-  TTL_Already_Updated
+  TTL_Already_Updated,
+  TTL_Update_Rejected
 }
