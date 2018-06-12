@@ -914,13 +914,11 @@ public class AmbryRequestsTest {
     private static Store store = new Store() {
 
       @Override
-      public void start() throws StoreException {
-
+      public void start() {
       }
 
       @Override
-      public StoreInfo get(List<? extends StoreKey> ids, EnumSet<StoreGetOptions> storeGetOptions)
-          throws StoreException {
+      public StoreInfo get(List<? extends StoreKey> ids, EnumSet<StoreGetOptions> storeGetOptions) {
         operationReceived = RequestOrResponseType.GetRequest;
         return new StoreInfo(new MessageReadSet() {
           @Override
@@ -952,23 +950,28 @@ public class AmbryRequestsTest {
       }
 
       @Override
-      public void put(MessageWriteSet messageSetToWrite) throws StoreException {
+      public void put(MessageWriteSet messageSetToWrite) {
         operationReceived = RequestOrResponseType.PutRequest;
       }
 
       @Override
-      public void delete(MessageWriteSet messageSetToDelete) throws StoreException {
+      public void delete(MessageWriteSet messageSetToDelete) {
         operationReceived = RequestOrResponseType.DeleteRequest;
       }
 
       @Override
-      public FindInfo findEntriesSince(FindToken token, long maxTotalSizeOfEntries) throws StoreException {
+      public void updateTtl(MessageWriteSet messageSetToUpdate) {
+        operationReceived = RequestOrResponseType.TtlUpdateRequest;
+      }
+
+      @Override
+      public FindInfo findEntriesSince(FindToken token, long maxTotalSizeOfEntries) {
         operationReceived = RequestOrResponseType.ReplicaMetadataRequest;
         return new FindInfo(Collections.EMPTY_LIST, FIND_TOKEN_FACTORY.getNewFindToken());
       }
 
       @Override
-      public Set<StoreKey> findMissingKeys(List<StoreKey> keys) throws StoreException {
+      public Set<StoreKey> findMissingKeys(List<StoreKey> keys) {
         return null;
       }
 
@@ -978,7 +981,7 @@ public class AmbryRequestsTest {
       }
 
       @Override
-      public boolean isKeyDeleted(StoreKey key) throws StoreException {
+      public boolean isKeyDeleted(StoreKey key) {
         return false;
       }
 
@@ -988,7 +991,7 @@ public class AmbryRequestsTest {
       }
 
       @Override
-      public void shutdown() throws StoreException {
+      public void shutdown() {
 
       }
     };

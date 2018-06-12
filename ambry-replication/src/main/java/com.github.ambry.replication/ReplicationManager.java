@@ -279,7 +279,8 @@ public class ReplicationManager {
   public ReplicationManager(ReplicationConfig replicationConfig, ClusterMapConfig clusterMapConfig,
       StoreConfig storeConfig, StorageManager storageManager, StoreKeyFactory storeKeyFactory, ClusterMap clusterMap,
       ScheduledExecutorService scheduler, DataNodeId dataNode, ConnectionPool connectionPool,
-      MetricRegistry metricRegistry, NotificationSystem requestNotification, StoreKeyConverterFactory storeKeyConverterFactory) throws ReplicationException {
+      MetricRegistry metricRegistry, NotificationSystem requestNotification,
+      StoreKeyConverterFactory storeKeyConverterFactory) throws ReplicationException {
 
     try {
       this.replicationConfig = replicationConfig;
