@@ -177,6 +177,8 @@ class CuratedLogIndexState {
     properties.put("store.enable.hard.delete", Boolean.toString(hardDeleteEnabled));
     // not used but set anyway since this is a package private variable.
     properties.put("store.segment.size.in.bytes", Long.toString(segmentCapacity));
+    // switch off time movement for the hard delete thread. Otherwise blobs expire too quickly
+    time.suspend(Collections.singleton(HardDeleter.getThreadName(tempDirStr)));
     initIndex();
     if (initState) {
       setupTestState(isLogSegmented, segmentCapacity, addTtlUpdates);
@@ -726,9 +728,8 @@ class CuratedLogIndexState {
    * 2. The ordering of PUT and DELETE entries is correct.
    * 3. There are no offsets in the log not accounted for in the index.
    * @throws IOException
-   * @throws StoreException
    */
-  void verifyRealIndexSanity() throws IOException, StoreException {
+  void verifyRealIndexSanity() throws IOException {
     IndexSegment prevIndexSegment = null;
     for (IndexSegment indexSegment : index.getIndexSegments().values()) {
       Offset indexSegmentStartOffset = indexSegment.getStartOffset();
@@ -1244,26 +1245,27 @@ class CuratedLogIndexState {
       for (Map.Entry<MockId, TreeSet<IndexValue>> indexSegmentEntry : referenceIndex.get(indexSegmentStartOffset)
           .entrySet()) {
         MockId key = indexSegmentEntry.getKey();
-        IndexValue value = indexSegmentEntry.getValue().last();
-        if (value.isFlagSet(IndexValue.Flags.Delete_Index)) {
+        NavigableSet<IndexValue> values = indexSegmentEntry.getValue();
+        if (values.last().isFlagSet(IndexValue.Flags.Delete_Index)) {
           // delete record is always valid
-          validEntries.add(new IndexEntry(key, value));
-          if (value.getOriginalMessageOffset() != IndexValue.UNKNOWN_ORIGINAL_MESSAGE_OFFSET
-              && value.getOriginalMessageOffset() != value.getOffset().getOffset()
-              && value.getOriginalMessageOffset() >= indexSegmentStartOffset.getOffset() && !isDeletedAt(key,
-              deleteReferenceTimeMs) && !isExpiredAt(key, expiryReferenceTimeMs)) {
-            // delete is irrelevant but it's in the same index segment as the put and the put is still valid
-            validEntries.add(new IndexEntry(key, getExpectedValue(key, true)));
+          if (isDeletedAt(key, deleteReferenceTimeMs) || isExpiredAt(key, expiryReferenceTimeMs)) {
+            validEntries.add(new IndexEntry(key, values.last()));
+          } else {
+            // the associated PUT is not expired or it is not considered "deleted" because of the ref time
+            // all entries in this segment have to be added
+            values.forEach(value -> validEntries.add(new IndexEntry(key, value)));
           }
-        } else if (!isExpiredAt(key, expiryReferenceTimeMs)) {
-          // unexpired
-          if (!deletedKeys.contains(key)) {
-            // non expired, non deleted PUT
-            validEntries.add(new IndexEntry(key, value));
-          } else if (!isDeletedAt(key, deleteReferenceTimeMs)) {
-            // delete does not count
-            validEntries.add(new IndexEntry(key, value));
+        } else if (values.size() == 1 && values.last().isFlagSet(IndexValue.Flags.Ttl_Update_Index)) {
+          // this index segment contains ONLY the TTL update entry
+          // valid as long as the original put is valid
+          if (!isExpiredAt(key, expiryReferenceTimeMs) && (!deletedKeys.contains(key) || !isDeletedAt(key,
+              deleteReferenceTimeMs))) {
+            validEntries.add(new IndexEntry(key, values.last()));
           }
+        } else if (!isExpiredAt(key, expiryReferenceTimeMs) && (!deletedKeys.contains(key) || !isDeletedAt(key,
+            deleteReferenceTimeMs))) {
+          // add all the entries in this index segment
+          values.forEach(value -> validEntries.add(new IndexEntry(key, value)));
         }
       }
     }
